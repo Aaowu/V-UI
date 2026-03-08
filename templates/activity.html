@@ -1,0 +1,166 @@
+{% extends 'base.html' %}
+{% set title = '活动明细' %}
+{% set heading = '活动明细' %}
+{% set page_desc = '查看每个链接的流量变化、在线 IP 和访问目标明细。HTTPS / REALITY 只能稳定看到目标域名或 IP，无法可靠读取完整 URL Path。' %}
+{% block content %}
+{% if is_owner %}
+<section class="card" id="traffic-section">
+  <div class="section-head">
+    <div>
+      <h2>流量活动</h2>
+      <p>支持按账户筛选，方便只看某个朋友账号的活动。</p>
+    </div>
+    <div class="toolbar wrap-head">
+      <form method="get" action="/activity" class="form-actions">
+        <input type="hidden" name="traffic_page" value="1">
+        <input type="hidden" name="access_page" value="1">
+        <select name="account_id">
+          <option value="0" {% if not current_account_id %}selected{% endif %}>全部账户</option>
+          {% for item in admin_users %}
+          <option value="{{ item.id }}" {% if current_account_id and current_account_id == item.id %}selected{% endif %}>{{ item.username }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn btn-light" type="submit">筛选</button>
+      </form>
+      <div class="pager-chip">第 {{ traffic_page_data.page }} / {{ traffic_page_data.total_pages }} 页</div>
+    </div>
+  </div>
+  <div class="table-wrap fixed-table-wrap">
+    <table>
+      <thead>
+        <tr><th>时间</th><th>链接</th><th>邮箱</th><th>上传增量</th><th>下载增量</th><th>累计已用</th><th>在线</th><th>在线 IP</th></tr>
+      </thead>
+      <tbody>
+        {% for item in recent_activity %}
+        <tr>
+          <td>{{ item.ts|bjt }}</td>
+          <td>{{ item.link_name }}</td>
+          <td>{{ item.link_email }}</td>
+          <td>{{ item.delta_up_human }}</td>
+          <td>{{ item.delta_down_human }}</td>
+          <td>{{ item.total_used_human }}</td>
+          <td>{{ item.online_count }}</td>
+          <td>{{ item.online_ips|join(', ') if item.online_ips else '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8">暂无流量活动记录</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pager-row">
+    {% if traffic_page_data.page > 1 %}<a class="btn btn-light" href="/activity?traffic_page={{ traffic_page_data.page - 1 }}&access_page={{ access_page_data.page }}&account_id={{ current_account_id or 0 }}#traffic-section">上一页</a>{% endif %}
+    <span class="page-note">共 {{ traffic_page_data.total }} 条</span>
+    {% if traffic_page_data.page < traffic_page_data.total_pages %}<a class="btn btn-light" href="/activity?traffic_page={{ traffic_page_data.page + 1 }}&access_page={{ access_page_data.page }}&account_id={{ current_account_id or 0 }}#traffic-section">下一页</a>{% endif %}
+  </div>
+</section>
+
+<section class="card mt-24" id="access-section">
+  <div class="section-head">
+    <div>
+      <h2>访问目标明细</h2>
+      <p>展示目标域名 / IP、来源 IP 和路由方向。对于加密网页流量，无法安全读取完整 URL 路径。</p>
+    </div>
+    <div class="pager-chip">第 {{ access_page_data.page }} / {{ access_page_data.total_pages }} 页</div>
+  </div>
+  <div class="table-wrap fixed-table-wrap">
+    <table>
+      <thead>
+        <tr><th>时间</th><th>链接邮箱</th><th>来源 IP</th><th>目标域名 / IP</th><th>网络</th><th>入站</th><th>出站</th></tr>
+      </thead>
+      <tbody>
+        {% for item in recent_access %}
+        <tr>
+          <td>{{ item.ts|bjt }}</td>
+          <td>{{ item.link_email or '-' }}</td>
+          <td>{{ item.client_ip or '-' }}</td>
+          <td>{{ item.destination or '-' }}</td>
+          <td>{{ item.network or '-' }}</td>
+          <td>{{ item.inbound_tag or '-' }}</td>
+          <td>{{ item.outbound_tag or '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">暂无访问目标明细</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pager-row">
+    {% if access_page_data.page > 1 %}<a class="btn btn-light" href="/activity?traffic_page={{ traffic_page_data.page }}&access_page={{ access_page_data.page - 1 }}&account_id={{ current_account_id or 0 }}#access-section">上一页</a>{% endif %}
+    <span class="page-note">共 {{ access_page_data.total }} 条</span>
+    {% if access_page_data.page < access_page_data.total_pages %}<a class="btn btn-light" href="/activity?traffic_page={{ traffic_page_data.page }}&access_page={{ access_page_data.page + 1 }}&account_id={{ current_account_id or 0 }}#access-section">下一页</a>{% endif %}
+  </div>
+</section>
+{% else %}
+<section class="card" id="traffic-section">
+  <div class="section-head">
+    <div>
+      <h2>我的活动</h2>
+      <p>这里只显示你自己的流量变化和访问目标。</p>
+    </div>
+    <div class="pager-chip">第 {{ traffic_page_data.page }} / {{ traffic_page_data.total_pages }} 页</div>
+  </div>
+  <div class="table-wrap fixed-table-wrap">
+    <table>
+      <thead>
+        <tr><th>时间</th><th>链接</th><th>上传增量</th><th>下载增量</th><th>累计已用</th></tr>
+      </thead>
+      <tbody>
+        {% for item in recent_activity %}
+        <tr>
+          <td>{{ item.ts|bjt }}</td>
+          <td>{{ item.link_name }}</td>
+          <td>{{ item.delta_up_human }}</td>
+          <td>{{ item.delta_down_human }}</td>
+          <td>{{ item.total_used_human }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">暂无流量活动记录</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pager-row">
+    {% if traffic_page_data.page > 1 %}<a class="btn btn-light" href="/activity?traffic_page={{ traffic_page_data.page - 1 }}&access_page={{ access_page_data.page }}#traffic-section">上一页</a>{% endif %}
+    <span class="page-note">共 {{ traffic_page_data.total }} 条</span>
+    {% if traffic_page_data.page < traffic_page_data.total_pages %}<a class="btn btn-light" href="/activity?traffic_page={{ traffic_page_data.page + 1 }}&access_page={{ access_page_data.page }}#traffic-section">下一页</a>{% endif %}
+  </div>
+</section>
+
+<section class="card mt-24" id="access-section">
+  <div class="section-head">
+    <div>
+      <h2>我的访问目标</h2>
+      <p>这里只显示你自己的目标域名 / IP 明细。</p>
+    </div>
+    <div class="pager-chip">第 {{ access_page_data.page }} / {{ access_page_data.total_pages }} 页</div>
+  </div>
+  <div class="table-wrap fixed-table-wrap">
+    <table>
+      <thead>
+        <tr><th>时间</th><th>来源 IP</th><th>目标域名 / IP</th><th>网络</th><th>入站</th><th>出站</th></tr>
+      </thead>
+      <tbody>
+        {% for item in recent_access %}
+        <tr>
+          <td>{{ item.ts|bjt }}</td>
+          <td>{{ item.client_ip or '-' }}</td>
+          <td>{{ item.destination or '-' }}</td>
+          <td>{{ item.network or '-' }}</td>
+          <td>{{ item.inbound_tag or '-' }}</td>
+          <td>{{ item.outbound_tag or '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">暂无访问目标明细</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="pager-row">
+    {% if access_page_data.page > 1 %}<a class="btn btn-light" href="/activity?traffic_page={{ traffic_page_data.page }}&access_page={{ access_page_data.page - 1 }}#access-section">上一页</a>{% endif %}
+    <span class="page-note">共 {{ access_page_data.total }} 条</span>
+    {% if access_page_data.page < access_page_data.total_pages %}<a class="btn btn-light" href="/activity?traffic_page={{ traffic_page_data.page }}&access_page={{ access_page_data.page + 1 }}#access-section">下一页</a>{% endif %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

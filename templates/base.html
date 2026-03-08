@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or settings.panel_title }}</title>
+  <link rel="stylesheet" href="/static/panel.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <script defer src="/static/vendor/chart.umd.min.js"></script>
+  <script defer src="/static/vendor/qrious.min.js"></script>
+  <script defer src="/static/panel.js"></script>
+</head>
+<body class="app-body">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-brand card-soft">
+        <div class="brand-mark">V</div>
+        <div>
+          <div class="brand-title">{{ settings.panel_title }}</div>
+          <div class="brand-subtitle">Private Link Control Panel</div>
+        </div>
+      </div>
+      <nav class="nav-list card-soft">
+        {% for item in nav %}
+        <a href="{{ item.path }}" class="nav-item {% if active_nav == item.key %}active{% endif %}">{{ item.name }}</a>
+        {% endfor %}
+      </nav>
+      {% if is_owner %}
+      <section class="sidebar-panel card-soft">
+        <div class="sidebar-label">服务状态</div>
+        <div class="status-pair"><span>Xray</span><strong class="status {{ service_status.xray }}">{{ service_status.xray }}</strong></div>
+        <div class="status-pair"><span>Panel</span><strong class="status {{ service_status.panel }}">{{ service_status.panel }}</strong></div>
+        <div class="status-pair"><span>Nginx</span><strong class="status {{ service_status.nginx }}">{{ service_status.nginx }}</strong></div>
+      </section>
+      <section class="sidebar-panel card-soft">
+        <div class="sidebar-label">系统概况</div>
+        <p>系统：<strong>{{ system_info.os_name }}</strong></p>
+        <p>运行时长：<strong>{{ system_info.uptime }}</strong></p>
+        <p>内存：<strong>{{ system_info.memory_used }} / {{ system_info.memory_total }}</strong></p>
+        <p>磁盘：<strong>{{ system_info.disk_used }} / {{ system_info.disk_total }}</strong></p>
+        <p>{{ display_tz_label }}</p>
+      </section>
+      {% else %}
+      <section class="sidebar-panel card-soft">
+        <div class="sidebar-label">我的账户</div>
+        <p>用户名：<strong>{{ user.username }}</strong></p>
+        <p>权限：<strong>使用权限</strong></p>
+        <p>{{ display_tz_label }}</p>
+      </section>
+      {% endif %}
+    </aside>
+
+    <div class="main-wrap">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">V UI</div>
+          <h1>{{ heading or settings.panel_title }}</h1>
+          <p class="page-desc">{{ page_desc or '' }}</p>
+        </div>
+        <div class="topbar-actions">
+          <a class="btn btn-light" href="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">刷新当前页</a>
+          <form method="post" action="/logout">
+            <button class="btn btn-ghost" type="submit">退出登录</button>
+          </form>
+        </div>
+      </header>
+
+      {% if message %}
+      <div class="banner {{ level }}">
+        <strong>{{ '失败' if level == 'error' else '提示' }}</strong>
+        <span>{{ message }}</span>
+      </div>
+      {% endif %}
+
+      {% if settings.announcement and is_owner %}
+      <div class="banner info">
+        <strong>公告</strong>
+        <span>{{ settings.announcement }}</span>
+      </div>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+
+  <div id="qr-modal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <button class="modal-close" type="button" data-close-modal>×</button>
+      <div class="modal-title" id="qr-title">二维码</div>
+      <canvas id="qr-canvas" width="260" height="260"></canvas>
+      <div class="modal-subtitle" id="qr-subtitle"></div>
+      <div class="copy-inline">
+        <input id="qr-text" type="text" readonly>
+        <button class="btn btn-light copy-btn" data-copy-target="#qr-text" type="button">复制</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

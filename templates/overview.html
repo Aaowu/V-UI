@@ -1,0 +1,187 @@
+{% extends 'base.html' %}
+{% set title = settings.panel_title %}
+{% set heading = '概览' if is_owner else '我的订阅' %}
+{% set page_desc = '总览当前链接数、总用量、在线状态、24 小时流量走势和最近访问活动。页面时间统一按北京时间显示。' if is_owner else '这里展示你自己的链接、流量额度、当前已用和订阅导入入口。' %}
+{% block content %}
+{% if is_owner %}
+<section class="stats-grid overview-stats-grid compact-overview-grid">
+  <article class="card stat-card compact-stat-card emphasis-card">
+    <span class="stat-label">链接总数</span>
+    <strong>{{ summary.total_links }}</strong>
+    <span class="stat-help">启用中 {{ summary.active_links }}</span>
+  </article>
+  <article class="card stat-card compact-stat-card">
+    <span class="stat-label">累计已用</span>
+    <strong>{{ summary.total_used_human }}</strong>
+    <span class="stat-help">总额度 {{ summary.total_quota_human }}</span>
+  </article>
+  <article class="card stat-card compact-stat-card">
+    <span class="stat-label">当前在线</span>
+    <strong>{{ summary.total_online }}</strong>
+    <span class="stat-help">受限 {{ summary.quota_limited_links + summary.expired_links }}</span>
+  </article>
+  <article class="card stat-card compact-stat-card">
+    <span class="stat-label">活跃账户</span>
+    <strong>{{ summary.active_accounts }}</strong>
+    <span class="stat-help" aria-hidden="true">&nbsp;</span>
+  </article>
+  <article class="card stat-card compact-stat-card">
+    <span class="stat-label">最近 24h 流量</span>
+    <strong>{{ summary.traffic_24h_human }}</strong>
+    <span class="stat-help">北京时间滚动统计</span>
+  </article>
+  <article class="card stat-card compact-stat-card">
+    <span class="stat-label">最近 24h 目标</span>
+    <strong>{{ summary.targets_24h }}</strong>
+    <span class="stat-help">不同目标域名 / IP 数量</span>
+  </article>
+</section>
+
+<section class="info-strip-row mt-20">
+  <div class="info-strip card-soft">最新同步：<strong>{{ runtime.last_sync_at|bjt if runtime.last_sync_at else '尚未同步' }}</strong></div>
+  <div class="info-strip card-soft">访问日志解析：<strong>{{ runtime.last_access_parse_at|bjt if runtime.last_access_parse_at else '尚未解析' }}</strong></div>
+  <div class="info-strip card-soft">北京时间：<strong>{{ display_tz_label }}</strong></div>
+</section>
+{% endif %}
+
+<section class="card mt-24">
+  <div class="section-head">
+    <div>
+      <h2>{{ '链接用量概览' if is_owner else '我的链接' }}</h2>
+    </div>
+    {% if is_owner %}<a class="btn btn-light" href="/links">管理链接</a>{% endif %}
+  </div>
+  <div class="link-stats-grid compact-link-overview-grid overview-link-grid">
+    {% for link in links %}
+    <div class="mini-card compact-mini-card overview-link-card">
+      <div class="overview-link-top">
+        <span>{{ link.name }}</span>
+        <button class="btn btn-light copy-btn overview-copy-btn" type="button" data-copy="{{ link.loon_sub }}">复制单链接订阅</button>
+      </div>
+      <strong>{{ link.used_human }}</strong>
+      <small>剩余 {{ link.remaining_human }}</small>
+      <small>流量上限 {{ link.quota_human }}</small>
+      <small>{% if link.online_ips %}在线 IP {{ link.online_ips|join(', ') }}{% elif link.recent_client_ip %}最近来源 IP {{ link.recent_client_ip }}{% else %}暂无 IP 记录{% endif %}</small>
+      <small>最近 {{ link.last_seen_at|bjt if link.last_seen_at else '暂无' }}</small>
+    </div>
+    {% else %}
+    <div class="empty-state">当前没有链接。</div>
+    {% endfor %}
+  </div>
+</section>
+
+{% if is_owner %}
+<section class="grid-two mt-24 chart-section-grid">
+  <article class="card chart-card better-chart-card">
+    <div class="section-head compact-head">
+      <div>
+        <h2>近 24 小时流量趋势</h2>
+        <p>按北京时间聚合上传 / 下载增量。</p>
+      </div>
+      <span class="chart-tag">24H</span>
+    </div>
+    <div class="chart-frame"><canvas id="usage-line-chart"></canvas></div>
+  </article>
+  <article class="card chart-card better-chart-card">
+    <div class="section-head compact-head">
+      <div>
+        <h2>各链接使用占比</h2>
+        <p>显示各链接当前已用流量占比。</p>
+      </div>
+      <span class="chart-tag">Share</span>
+    </div>
+    <div class="chart-frame"><canvas id="link-usage-chart"></canvas></div>
+  </article>
+</section>
+
+<section class="grid-two mt-24 dashboard-lower-grid">
+  <article class="card">
+    <div class="section-head">
+      <div>
+        <h2>最近流量活动</h2>
+        <p>最近 12 条采样记录，方便快速看增量变化。</p>
+      </div>
+      <a class="btn btn-light" href="/activity">查看全部</a>
+    </div>
+    <div class="table-wrap small-table fixed-table-wrap">
+      <table>
+        <thead>
+          <tr><th>时间</th><th>链接</th><th>上传</th><th>下载</th><th>在线</th></tr>
+        </thead>
+        <tbody>
+          {% for item in recent_activity %}
+          <tr>
+            <td>{{ item.ts|bjt }}</td>
+            <td>{{ item.link_name }}</td>
+            <td>{{ item.delta_up_human }}</td>
+            <td>{{ item.delta_down_human }}</td>
+            <td>{{ item.online_count }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5">暂无活动</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <article class="card">
+    <div class="section-head">
+      <div>
+        <h2>最近访问目标</h2>
+        <p>展示最近访问的目标域名 / IP 和来源 IP。</p>
+      </div>
+      <a class="btn btn-light" href="/activity">进入活动明细</a>
+    </div>
+    <div class="table-wrap small-table fixed-table-wrap">
+      <table>
+        <thead>
+          <tr><th>时间</th><th>链接</th><th>来源 IP</th><th>目标</th></tr>
+        </thead>
+        <tbody>
+          {% for item in recent_access %}
+          <tr>
+            <td>{{ item.ts|bjt }}</td>
+            <td>{{ item.link_email or '-' }}</td>
+            <td>{{ item.client_ip or '-' }}</td>
+            <td>{{ item.destination or '-' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">暂无访问目标明细</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+</section>
+<script id="overview-charts" type="application/json">{{ charts|tojson }}</script>
+{% else %}
+<section class="card mt-24">
+  <div class="section-head">
+    <div>
+      <h2>我的最近活动</h2>
+      <p>这里只显示你自己的流量变化和访问目标。</p>
+    </div>
+  </div>
+  <div class="table-wrap small-table fixed-table-wrap">
+    <table>
+      <thead>
+        <tr><th>时间</th><th>链接</th><th>上传</th><th>下载</th></tr>
+      </thead>
+      <tbody>
+        {% for item in recent_activity %}
+        <tr>
+          <td>{{ item.ts|bjt }}</td>
+          <td>{{ item.link_name }}</td>
+          <td>{{ item.delta_up_human }}</td>
+          <td>{{ item.delta_down_human }}</td>
+        </tr>
+        {% else %}
+          <tr><td colspan="4">暂无活动</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

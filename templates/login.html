@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ panel_title }}</title>
+  <link rel="stylesheet" href="/static/panel.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+</head>
+<body class="login-body">
+  <div class="login-bg-grid"></div>
+  <main class="login-layout">
+    <section class="login-showcase card">
+      <div class="eyebrow">V UI</div>
+      <h1>{{ panel_title }}</h1>
+      <p class="page-desc">登录后可以直接管理自用链接、查看每个链接的流量使用情况、复制订阅，并观察最近的访问活动。</p>
+      <div class="login-highlights">
+        <article class="login-highlight">
+          <span class="highlight-kicker">链接管理</span>
+          <strong>独立链接 / 二维码 / Loon 导入</strong>
+          <small>每个链接都有独立 UUID、订阅地址和统计信息。</small>
+        </article>
+        <article class="login-highlight">
+          <span class="highlight-kicker">流量控制</span>
+          <strong>流量上限 / 已用统计 / 月重置</strong>
+          <small>适合自用，也适合临时分享给朋友。</small>
+        </article>
+        <article class="login-highlight">
+          <span class="highlight-kicker">活动观察</span>
+          <strong>趋势图 / 在线 IP / 访问目标</strong>
+          <small>更方便确认是否有人在用，以及最近访问了哪些目标。</small>
+        </article>
+      </div>
+      <div class="login-status-strip">
+        <div><span>协议</span><strong>VLESS + REALITY</strong></div>
+        <div><span>控制域名</span><strong>{{ server_domain }}</strong></div>
+        <div><span>时区</span><strong>{{ display_tz_label }}</strong></div>
+      </div>
+    </section>
+
+    <section class="login-form-card card">
+      <div class="login-logo-row">
+        <div class="brand-mark large">V</div>
+        <div>
+          <div class="brand-title">进入 {{ panel_title }}</div>
+          <div class="brand-subtitle">输入账号密码进入面板</div>
+        </div>
+      </div>
+
+      {% if announcement %}
+      <div class="banner info"><strong>公告</strong><span>{{ announcement }}</span></div>
+      {% endif %}
+      {% if message %}
+      <div class="banner {{ level }}"><strong>{{ '失败' if level == 'error' else '提示' }}</strong><span>{{ message }}</span></div>
+      {% endif %}
+
+      <form class="form-stack" method="post" action="/login">
+        <label>
+          <span>用户名</span>
+          <input type="text" name="username" placeholder="admin" autocomplete="username" required>
+        </label>
+        <label>
+          <span>密码</span>
+          <input type="password" name="password" placeholder="请输入密码" autocomplete="current-password" required>
+        </label>
+        <button class="btn btn-primary full-width" type="submit">进入面板</button>
+      </form>
+
+      <div class="login-side-note">
+        <div class="note-title">当前面板可做的事</div>
+        <ul>
+          <li>创建和管理自用 / 分享链接</li>
+          <li>设置流量上限并观察当前已用</li>
+          <li>让客户端更新订阅时看到流量信息</li>
+          <li>分页查看活动和访问目标明细</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

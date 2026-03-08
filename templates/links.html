@@ -1,0 +1,172 @@
+{% extends 'base.html' %}
+{% set title = settings.panel_title ~ ' · 链接管理' %}
+{% set heading = '链接管理' if is_owner else '我的链接' %}
+{% set page_desc = '主账号按朋友账号分组查看链接。' if is_owner else '你可以在自己的总流量额度内创建多个链接；每个链接都要设置自己的额度，但所有链接额度总和不能超过主管理员分配给你的总额度。' %}
+{% block content %}
+{% if is_owner %}
+<section class="stack-section">
+  {% for group in link_groups %}
+  <article class="card grouped-link-card">
+    <div class="section-head wrap-head link-header-row">
+      <div>
+        <h2>{{ '主管理员' if group.owner_role == 'owner' else group.owner_username }}</h2>
+        <p>已用 {{ group.used_human }} · 剩余 {{ group.remaining_human }} · 总额度 {{ group.quota_human }}</p>
+      </div>
+    </div>
+    <div class="stack-section compact-stack">
+      {% for link in group.links %}
+      <article class="sub-link-card {% if not link.enabled %}link-card-disabled{% endif %}">
+        <div class="section-head wrap-head link-header-row">
+          <div>
+            <h3>{{ link.name }}</h3>
+            <p>{{ link.email }}</p>
+          </div>
+          <div class="toolbar wrap-head">
+            <form method="post" action="/links/{{ link.id }}/toggle"><button class="btn btn-light" type="submit">{% if link.enabled %}停用{% else %}启用{% endif %}</button></form>
+            <form method="post" action="/links/{{ link.id }}/reset-usage"><button class="btn btn-light" type="submit">重置流量</button></form>
+            <form method="post" action="/links/{{ link.id }}/delete" onsubmit="return confirm('确认删除这个链接吗？');"><button class="btn btn-danger" type="submit">删除</button></form>
+          </div>
+        </div>
+        <div class="link-stats-grid compact-link-grid">
+          <div class="mini-card compact-mini-card"><span>已用总量</span><strong>{{ link.used_human }}</strong><small>剩余 {{ link.remaining_human }}</small></div>
+          <div class="mini-card compact-mini-card"><span>上传 / 下载</span><strong>{{ link.used_up_human }} / {{ link.used_down_human }}</strong><small>按账号总额度计算</small></div>
+          <div class="mini-card compact-mini-card"><span>在线状态</span><strong>{{ link.online_count }}</strong><small>{% if link.online_ips %}在线 IP：{{ link.online_ips|join(', ') }}{% elif link.recent_client_ip %}最近来源 IP：{{ link.recent_client_ip }}{% else %}暂无 IP 记录{% endif %}</small></div>
+          <div class="mini-card compact-mini-card"><span>单链接额度</span><strong>{{ link.link_quota_human }}</strong><small>单链接已用 {{ link.link_used_human }}</small></div>
+        </div>
+        <div class="progress-bar"><span style="width: {{ link.usage_percent }}%;"></span></div>
+        <details class="link-details mt-20">
+          <summary>高级设置与订阅</summary>
+          <div class="link-details-body">
+            <form class="form-stack mt-20" method="post" action="/links/{{ link.id }}/update">
+              <div class="form-grid cols-4">
+                <label><span>名称</span><input type="text" name="name" value="{{ link.name }}" required></label>
+                <label><span>邮箱标识</span><input type="email" name="email" value="{{ link.email }}" required></label>
+                <label><span>流量额度（GB）</span><input type="number" step="0.1" min="0" name="quota_gb" value="{{ link.link_quota_gb }}"></label>
+                <label><span>每月重置日</span><input type="number" min="1" max="28" name="reset_day" value="{{ link.reset_day }}"></label>
+                <label><span>到期日期</span><input type="date" name="expires_at" value="{{ link.expires_at|bjt_date if link.expires_at else '' }}"></label>
+                <label class="span-2"><span>备注</span><input type="text" name="notes" value="{{ link.notes }}"></label>
+              </div>
+              <div class="switch-row">
+                <label class="switch-item"><input type="checkbox" name="auto_disable_on_expire" {% if link.auto_disable_on_expire %}checked{% endif %}><span>到期自动停用</span></label>
+                <label class="switch-item"><input type="checkbox" name="auto_reenable_on_reset" {% if link.auto_reenable_on_reset %}checked{% endif %}><span>月重置后自动恢复</span></label>
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit">保存此链接</button>
+                <button class="btn btn-light" type="submit" formaction="/links/{{ link.id }}/rotate">轮换 UUID</button>
+                <button class="btn btn-light" type="submit" formaction="/links/{{ link.id }}/share-token">重置订阅 Token</button>
+              </div>
+            </form>
+            <div class="link-sub-grid mt-20 clean-sub-grid">
+              <div class="sub-card"><div class="sub-title">Loon 一键导入</div><div class="copy-line"><input type="text" readonly value="{{ link.loon_import }}"><button class="btn btn-light copy-btn" type="button" data-copy="{{ link.loon_import }}">复制</button><button class="btn btn-light qr-btn" type="button" data-qr-title="{{ link.name }} · Loon" data-qr-text="{{ link.loon_import }}">二维码</button></div></div>
+              <div class="sub-card"><div class="sub-title">Loon 订阅地址</div><div class="copy-line"><input type="text" readonly value="{{ link.loon_sub }}"><button class="btn btn-light copy-btn" type="button" data-copy="{{ link.loon_sub }}">复制</button><button class="btn btn-light qr-btn" type="button" data-qr-title="{{ link.name }} · Loon订阅" data-qr-text="{{ link.loon_sub }}">二维码</button></div></div>
+              <div class="sub-card"><div class="sub-title">通用 VLESS 链接</div><div class="copy-line"><input type="text" readonly value="{{ link.vless_uri }}"><button class="btn btn-light copy-btn" type="button" data-copy="{{ link.vless_uri }}">复制</button><button class="btn btn-light qr-btn" type="button" data-qr-title="{{ link.name }} · VLESS" data-qr-text="{{ link.vless_uri }}">二维码</button></div></div>
+              <div class="sub-card"><div class="sub-title">单链接订阅</div><div class="copy-line"><input type="text" readonly value="{{ link.vless_sub }}"><button class="btn btn-light copy-btn" type="button" data-copy="{{ link.vless_sub }}">复制</button></div></div>
+            </div>
+          </div>
+        </details>
+      </article>
+      {% endfor %}
+    </div>
+  </article>
+  {% else %}
+  <div class="card empty-state">当前没有任何链接。</div>
+  {% endfor %}
+</section>
+{% else %}
+<section class="card member-allocation-card">
+  <div class="section-head">
+    <div>
+      <h2>我的总额度</h2>
+      <p>你创建的所有链接共用这一份总额度。</p>
+    </div>
+  </div>
+  <div class="link-stats-grid compact-link-grid">
+    <div class="mini-card compact-mini-card"><span>总流量额度</span><strong>{{ member_allocation.total_quota_human }}</strong><small>主管理员分配</small></div>
+    <div class="mini-card compact-mini-card"><span>已分配额度</span><strong>{{ member_allocation.allocated_quota_human }}</strong><small>当前所有链接额度总和</small></div>
+    <div class="mini-card compact-mini-card"><span>剩余可分配</span><strong>{{ member_allocation.remaining_allocatable_human }}</strong><small>新增或修改链接时可继续分配</small></div>
+  </div>
+</section>
+
+<section class="stack-section mt-24">
+  {% for link in links %}
+  <article class="card link-card clean-link-card {% if not link.enabled %}link-card-disabled{% endif %}">
+    <div class="section-head wrap-head link-header-row">
+      <div>
+        <h2>{{ link.name }}</h2>
+        <p>{{ link.email }}</p>
+      </div>
+      <div class="toolbar wrap-head">
+        <form method="post" action="/links/{{ link.id }}/toggle"><button class="btn btn-light" type="submit">{% if link.enabled %}停用{% else %}启用{% endif %}</button></form>
+        <form method="post" action="/links/{{ link.id }}/delete" onsubmit="return confirm('确认删除这个链接吗？');"><button class="btn btn-danger" type="submit">删除</button></form>
+      </div>
+    </div>
+    <div class="link-stats-grid compact-link-grid">
+      <div class="mini-card compact-mini-card"><span>已用总量</span><strong>{{ link.used_human }}</strong><small>剩余 {{ link.remaining_human }}</small></div>
+      <div class="mini-card compact-mini-card"><span>上传 / 下载</span><strong>{{ link.used_up_human }} / {{ link.used_down_human }}</strong><small>共享同一个总额度</small></div>
+      <div class="mini-card compact-mini-card"><span>在线状态</span><strong>{{ link.online_count }}</strong><small>{% if link.online_ips %}在线 IP：{{ link.online_ips|join(', ') }}{% elif link.recent_client_ip %}最近来源 IP：{{ link.recent_client_ip }}{% else %}暂无 IP 记录{% endif %}</small></div>
+      <div class="mini-card compact-mini-card"><span>单链接额度</span><strong>{{ link.link_quota_human }}</strong><small>单链接已用 {{ link.link_used_human }}</small></div>
+    </div>
+    <div class="progress-bar"><span style="width: {{ link.usage_percent }}%;"></span></div>
+    <details class="link-details mt-20">
+      <summary>高级设置与订阅</summary>
+      <div class="link-details-body">
+        <form class="form-stack mt-20" method="post" action="/links/{{ link.id }}/update">
+          <div class="form-grid cols-4">
+            <label><span>名称</span><input type="text" name="name" value="{{ link.name }}" required></label>
+            <label><span>邮箱标识</span><input type="email" name="email" value="{{ link.email }}" required></label>
+            <label><span>单链接额度（GB）</span><input type="number" step="0.1" min="0.1" name="quota_gb" value="{{ link.link_quota_gb }}" required></label>
+            <label class="span-2"><span>备注</span><input type="text" name="notes" value="{{ link.notes }}"></label>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" type="submit">保存此链接</button>
+            <button class="btn btn-light" type="submit" formaction="/links/{{ link.id }}/rotate">轮换 UUID</button>
+            <button class="btn btn-light" type="submit" formaction="/links/{{ link.id }}/share-token">重置订阅 Token</button>
+          </div>
+        </form>
+        <div class="link-sub-grid mt-20 clean-sub-grid">
+          <div class="sub-card"><div class="sub-title">Loon 一键导入</div><div class="copy-line"><input type="text" readonly value="{{ link.loon_import }}"><button class="btn btn-light copy-btn" type="button" data-copy="{{ link.loon_import }}">复制</button><button class="btn btn-light qr-btn" type="button" data-qr-title="{{ link.name }} · Loon" data-qr-text="{{ link.loon_import }}">二维码</button></div></div>
+          <div class="sub-card"><div class="sub-title">Loon 订阅地址</div><div class="copy-line"><input type="text" readonly value="{{ link.loon_sub }}"><button class="btn btn-light copy-btn" type="button" data-copy="{{ link.loon_sub }}">复制</button><button class="btn btn-light qr-btn" type="button" data-qr-title="{{ link.name }} · Loon订阅" data-qr-text="{{ link.loon_sub }}">二维码</button></div></div>
+          <div class="sub-card"><div class="sub-title">通用 VLESS 链接</div><div class="copy-line"><input type="text" readonly value="{{ link.vless_uri }}"><button class="btn btn-light copy-btn" type="button" data-copy="{{ link.vless_uri }}">复制</button><button class="btn btn-light qr-btn" type="button" data-qr-title="{{ link.name }} · VLESS" data-qr-text="{{ link.vless_uri }}">二维码</button></div></div>
+          <div class="sub-card"><div class="sub-title">单链接订阅</div><div class="copy-line"><input type="text" readonly value="{{ link.vless_sub }}"><button class="btn btn-light copy-btn" type="button" data-copy="{{ link.vless_sub }}">复制</button></div></div>
+        </div>
+      </div>
+    </details>
+  </article>
+  {% else %}
+  <div class="card empty-state">当前还没有链接，你可以先在下方创建自己的链接。</div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="card mt-24" id="create-link-card">
+  <div class="section-head">
+    <div>
+      <h2>新增链接</h2>
+      <p>{% if is_owner %}当你需要给自己新增设备，或者临时分享给朋友时，再在这里创建即可。{% else %}你可以创建多个自己的链接，但每个链接都要设置自己的额度，而且所有链接额度总和不能超过主管理员给你的总额度。{% endif %}</p>
+    </div>
+  </div>
+  <form class="form-stack" method="post" action="/links/create">
+    <div class="form-grid cols-4">
+      <label><span>名称</span><input type="text" name="name" placeholder="例如：iPhone 主用" required></label>
+      <label><span>邮箱标识</span><input type="email" name="email" placeholder="admin@example.com" required></label>
+      {% if is_owner %}
+      <label><span>流量额度（GB）</span><input type="number" step="0.1" min="0" name="quota_gb" placeholder="0 或留空表示不限"></label>
+      <label><span>每月重置日</span><input type="number" min="1" max="28" name="reset_day" value="1"></label>
+      <label><span>到期日期</span><input type="date" name="expires_at"></label>
+      <label class="span-2"><span>备注</span><input type="text" name="notes" placeholder="例如：给朋友临时用"></label>
+      {% else %}
+      <label><span>单链接额度（GB）</span><input type="number" step="0.1" min="0.1" name="quota_gb" placeholder="例如：20" required></label>
+      <label class="span-2"><span>备注</span><input type="text" name="notes" placeholder="例如：MacBook 或 iPhone"></label>
+      {% endif %}
+    </div>
+    {% if is_owner %}
+    <div class="switch-row">
+      <label class="switch-item"><input type="checkbox" name="auto_disable_on_expire" checked><span>到期自动停用</span></label>
+      <label class="switch-item"><input type="checkbox" name="auto_reenable_on_reset" checked><span>月重置后自动恢复</span></label>
+    </div>
+    {% endif %}
+    <div class="form-actions"><button class="btn btn-primary" type="submit">创建链接</button></div>
+    <p class="page-note">客户端更新订阅时，会读取本面板返回的流量头信息，显示当前已用和总流量上限。</p>
+  </form>
+</section>
+{% endblock %}
