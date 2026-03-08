@@ -1,11 +1,37 @@
 # V UI
 
+[![CI](https://github.com/Aaowu/V-UI/actions/workflows/ci.yml/badge.svg)](https://github.com/Aaowu/V-UI/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/Aaowu/V-UI)](./LICENSE)
+[![Release Status](https://img.shields.io/badge/status-active-success)](https://github.com/Aaowu/V-UI)
+[![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/)
+
 一个面向 `Xray + VLESS + REALITY (xtls-rprx-vision)` 的轻量控制面板。
 
 适合：
 - 自用
 - 偶尔分享给朋友
 - 需要直接管理链接、流量上限、已用流量、订阅导入、访问活动明细
+
+## 特点
+
+- 轻量：`FastAPI + Jinja2 + SQLite`
+- 友好：一键安装脚本支持交互式输入
+- 清晰：主账号 / 朋友账号权限分层
+- 实用：支持总流量池、多链接共享额度、客户端流量头
+- 可观测：活动明细、访问目标、近 24 小时趋势图
+
+## 界面概览
+
+当前内置页面：
+- 概览
+- 链接管理
+- 活动明细
+- 系统设置
+
+如果你准备公开发布仓库，建议后续再补充：
+- 页面截图
+- 演示 GIF
+- 发布版本截图目录（如 `docs/screenshots/`）
 
 ## 功能
 
