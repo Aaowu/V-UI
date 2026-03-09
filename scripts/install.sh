@@ -294,10 +294,10 @@ ENV
 }
 
 open_reality_port() {
-  iptables -C INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'icu-xray-reality' -j ACCEPT 2>/dev/null || \
-    iptables -I INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'icu-xray-reality' -j ACCEPT
-  ip6tables -C INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'icu-xray-reality' -j ACCEPT 2>/dev/null || \
-    ip6tables -I INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'icu-xray-reality' -j ACCEPT
+  iptables -C INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'vui-xray-reality' -j ACCEPT 2>/dev/null || \
+    iptables -I INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'vui-xray-reality' -j ACCEPT
+  ip6tables -C INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'vui-xray-reality' -j ACCEPT 2>/dev/null || \
+    ip6tables -I INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'vui-xray-reality' -j ACCEPT
   mkdir -p /etc/iptables
   iptables-save > /etc/iptables/rules.v4
   ip6tables-save > /etc/iptables/rules.v6

@@ -28,6 +28,7 @@ DATA_DIR = Path(os.getenv("PANEL_DATA_DIR", str(APP_DIR / "data")))
 STATIC_DIR = APP_DIR / "static"
 TEMPLATES_DIR = APP_DIR / "templates"
 DB_PATH = DATA_DIR / "panel.db"
+OWNER_CREDENTIALS_PATH = DATA_DIR / "admin_credentials.txt"
 XRAY_CONFIG_PATH = Path(os.getenv("XRAY_CONFIG_PATH", "/usr/local/etc/xray/config.json"))
 XRAY_ENV_PATH = Path(os.getenv("XRAY_ENV_PATH", "/root/xray-reality-main.env"))
 XRAY_BIN = Path(os.getenv("XRAY_BIN", "/usr/local/bin/xray"))
@@ -36,10 +37,12 @@ XRAY_LOG_DIR = Path(os.getenv("XRAY_LOG_DIR", "/var/log/xray"))
 XRAY_ACCESS_LOG = XRAY_LOG_DIR / "access.log"
 XRAY_ERROR_LOG = XRAY_LOG_DIR / "error.log"
 POLL_INTERVAL_SECONDS = 60
-SESSION_COOKIE_NAME = "icu_panel_session"
+SESSION_COOKIE_NAME = "vui_session"
+LEGACY_SESSION_COOKIE_NAMES = ("icu_panel_session",)
 SESSION_TTL_DAYS = 14
 INBOUND_TAG = "vless-reality"
-REALITY_FIREWALL_COMMENT = "icu-xray-reality"
+REALITY_FIREWALL_COMMENT = "vui-xray-reality"
+LEGACY_REALITY_FIREWALL_COMMENTS = ("icu-xray-reality",)
 DEFAULT_PANEL_TITLE = os.getenv("PANEL_DEFAULT_TITLE", "V UI")
 DEFAULT_SERVER_DOMAIN = os.getenv("PANEL_DEFAULT_DOMAIN", "panel.example.com")
 DEFAULT_FLOW = os.getenv("PANEL_DEFAULT_FLOW", "xtls-rprx-vision")
@@ -373,8 +376,23 @@ def ensure_default_settings_from_xray() -> None:
 
 
 def sync_owner_credentials_file(username: str, password: str) -> None:
-    sync_owner_credentials_file(username, password)
+    ensure_dirs()
+    OWNER_CREDENTIALS_PATH.write_text(
+        f"username={username}\npassword={password}\n",
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(OWNER_CREDENTIALS_PATH, 0o600)
+    except OSError:
+        pass
 
+
+def get_session_token(request: Request) -> str | None:
+    for cookie_name in (SESSION_COOKIE_NAME, *LEGACY_SESSION_COOKIE_NAMES):
+        token = request.cookies.get(cookie_name)
+        if token:
+            return token
+    return None
 
 def ensure_admin_user() -> None:
     with closing(db()) as conn:
@@ -655,9 +673,11 @@ def set_managed_firewall_port(port: int) -> None:
 set -e
 for tool in iptables ip6tables; do
   command -v "$tool" >/dev/null 2>&1 || continue
-  while "$tool" -S INPUT 2>/dev/null | grep -q '{REALITY_FIREWALL_COMMENT}'; do
-    rule=$($tool -S INPUT | grep '{REALITY_FIREWALL_COMMENT}' | head -n1)
-    $tool ${{rule/-A/-D}}
+  for comment in "{REALITY_FIREWALL_COMMENT}" "{LEGACY_REALITY_FIREWALL_COMMENTS[0]}"; do
+    while "$tool" -S INPUT 2>/dev/null | grep -F -q "$comment"; do
+      rule=$($tool -S INPUT | grep -F "$comment" | head -n1)
+      $tool ${{rule/-A/-D}}
+    done
   done
 done
 iptables -C INPUT -p tcp --dport {port} -m comment --comment '{REALITY_FIREWALL_COMMENT}' -j ACCEPT 2>/dev/null || \
@@ -668,7 +688,6 @@ iptables-save > /etc/iptables/rules.v4
 ip6tables-save > /etc/iptables/rules.v6
 '''
     subprocess.run(["bash", "-lc", script], check=True)
-
 
 def write_env_file(settings: dict[str, str]) -> None:
     XRAY_ENV_PATH.write_text(
@@ -1094,22 +1113,25 @@ def create_session(user_id: int) -> str:
 
 def get_current_user(request: Request) -> sqlite3.Row:
     cleanup_expired_sessions()
-    token = request.cookies.get(SESSION_COOKIE_NAME)
+    token = get_session_token(request)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     with closing(db()) as conn:
         row = conn.execute(
             """
-            SELECT u.* FROM sessions s
-            JOIN admin_users u ON u.id = s.user_id
-            WHERE s.token = ? AND s.expires_at >= ?
+            SELECT sessions.*, admin_users.username, admin_users.role, admin_users.password_hash, admin_users.salt
+            FROM sessions
+            JOIN admin_users ON admin_users.id = sessions.user_id
+            WHERE sessions.token = ?
             """,
-            (token, now_iso()),
+            (token,),
         ).fetchone()
-    if not row:
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    expires_at = parse_iso(row["expires_at"])
+    if expires_at and expires_at < now_utc():
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     return row
-
 
 def optional_current_user(request: Request) -> sqlite3.Row | None:
     try:
@@ -1627,13 +1649,14 @@ def login_submit(username: str = Form(...), password: str = Form(...)) -> Redire
 
 @app.post("/logout")
 def logout(request: Request) -> RedirectResponse:
-    token = request.cookies.get(SESSION_COOKIE_NAME)
+    token = get_session_token(request)
     if token:
         with closing(db()) as conn:
             conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
             conn.commit()
     response = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
-    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    for cookie_name in (SESSION_COOKIE_NAME, *LEGACY_SESSION_COOKIE_NAMES):
+        response.delete_cookie(cookie_name, path="/")
     return response
 
 
