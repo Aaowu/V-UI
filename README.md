@@ -195,6 +195,12 @@ uvicorn app:app --host 127.0.0.1 --port 9200 --reload
 
 ## 发布到 GitHub 前
 
+如果你平时是在 `/root/vui-plan` 里开发、在 `/root/V-UI` 里发布，建议先阅读完整流程文档：
+
+- `docs/PUBLISH_WORKFLOW.md`
+
+它包含：同步代码、脱敏、校验、提交、推送 GitHub 的完整步骤。
+
 执行：
 
 ```bash

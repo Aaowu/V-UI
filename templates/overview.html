@@ -40,7 +40,7 @@
 <section class="info-strip-row mt-20">
   <div class="info-strip card-soft">最新同步：<strong>{{ runtime.last_sync_at|bjt if runtime.last_sync_at else '尚未同步' }}</strong></div>
   <div class="info-strip card-soft">访问日志解析：<strong>{{ runtime.last_access_parse_at|bjt if runtime.last_access_parse_at else '尚未解析' }}</strong></div>
-  <div class="info-strip card-soft">北京时间：<strong>{{ display_tz_label }}</strong></div>
+  <div class="info-strip card-soft hide-on-mobile">北京时间：<strong>{{ display_tz_label }}</strong></div>
 </section>
 {% endif %}
 
@@ -177,7 +177,7 @@
           <td>{{ item.delta_down_human }}</td>
         </tr>
         {% else %}
-          <tr><td colspan="4">暂无活动</td></tr>
+        <tr><td colspan="4">暂无活动</td></tr>
         {% endfor %}
       </tbody>
     </table>

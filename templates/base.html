@@ -4,15 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title or settings.panel_title }}</title>
-  <link rel="stylesheet" href="/static/panel.css">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <script defer src="/static/vendor/chart.umd.min.js"></script>
-  <script defer src="/static/vendor/qrious.min.js"></script>
-  <script defer src="/static/panel.js"></script>
+  <link rel="stylesheet" href="/static/panel.css?v=20260309-mobile6">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=20260309-mobile6">
+  <script defer src="/static/vendor/chart.umd.min.js?v=20260309-mobile6"></script>
+  <script defer src="/static/vendor/qrious.min.js?v=20260309-mobile6"></script>
+  <script defer src="/static/panel.js?v=20260309-mobile6"></script>
 </head>
 <body class="app-body">
+  <div class="mobile-nav-backdrop hidden" id="mobile-nav-backdrop"></div>
   <div class="app-shell">
-    <aside class="sidebar">
+    <aside class="sidebar" id="mobile-sidebar">
       <div class="sidebar-brand card-soft">
         <div class="brand-mark">V</div>
         <div>
@@ -52,10 +53,15 @@
 
     <div class="main-wrap">
       <header class="topbar">
-        <div>
-          <div class="eyebrow">V UI</div>
-          <h1>{{ heading or settings.panel_title }}</h1>
-          <p class="page-desc">{{ page_desc or '' }}</p>
+        <div class="topbar-main">
+          <button class="mobile-menu-btn" id="mobile-menu-btn" type="button" aria-label="打开菜单" aria-controls="mobile-sidebar" aria-expanded="false">
+            <span></span><span></span><span></span>
+          </button>
+          <div>
+            <div class="eyebrow">V UI</div>
+            <h1>{{ heading or settings.panel_title }}</h1>
+            <p class="page-desc">{{ page_desc or '' }}</p>
+          </div>
         </div>
         <div class="topbar-actions">
           <a class="btn btn-light" href="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">刷新当前页</a>

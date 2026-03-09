@@ -51,6 +51,37 @@ function bindQrButtons() {
   document.querySelectorAll('[data-close-modal]').forEach((button) => button.addEventListener('click', closeModal));
 }
 
+function bindMobileMenu() {
+  const body = document.body;
+  const button = document.getElementById('mobile-menu-btn');
+  const sidebar = document.getElementById('mobile-sidebar');
+  const backdrop = document.getElementById('mobile-nav-backdrop');
+  if (!button || !sidebar || !backdrop) return;
+
+  const closeMenu = () => {
+    body.classList.remove('mobile-nav-open');
+    backdrop.classList.add('hidden');
+    button.setAttribute('aria-expanded', 'false');
+  };
+
+  const openMenu = () => {
+    body.classList.add('mobile-nav-open');
+    backdrop.classList.remove('hidden');
+    button.setAttribute('aria-expanded', 'true');
+  };
+
+  button.addEventListener('click', () => {
+    if (body.classList.contains('mobile-nav-open')) closeMenu();
+    else openMenu();
+  });
+
+  backdrop.addEventListener('click', closeMenu);
+  sidebar.querySelectorAll('a').forEach((link) => link.addEventListener('click', closeMenu));
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 880) closeMenu();
+  });
+}
+
 function createUsageLineChart(canvas, usage) {
   if (!canvas || typeof Chart === 'undefined') return;
   const labels = usage?.labels || [];
@@ -61,26 +92,8 @@ function createUsageLineChart(canvas, usage) {
     data: {
       labels,
       datasets: [
-        {
-          label: '上传',
-          data: uplink,
-          borderColor: '#7fb0ff',
-          backgroundColor: 'rgba(127, 176, 255, 0.18)',
-          fill: true,
-          tension: 0.35,
-          borderWidth: 2,
-          pointRadius: 2,
-        },
-        {
-          label: '下载',
-          data: downlink,
-          borderColor: '#2d74ff',
-          backgroundColor: 'rgba(45, 116, 255, 0.10)',
-          fill: true,
-          tension: 0.35,
-          borderWidth: 2,
-          pointRadius: 2,
-        },
+        { label: '上传', data: uplink, borderColor: '#7fb0ff', backgroundColor: 'rgba(127, 176, 255, 0.18)', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 2 },
+        { label: '下载', data: downlink, borderColor: '#2d74ff', backgroundColor: 'rgba(45, 116, 255, 0.10)', fill: true, tension: 0.35, borderWidth: 2, pointRadius: 2 },
       ],
     },
     options: {
@@ -106,24 +119,8 @@ function createLinkShareChart(canvas, usage) {
   const colors = ['#4d86ff', '#79a8ff', '#a8c7ff', '#bfd8ff', '#d7e8ff', '#8ab8ff'];
   new Chart(canvas, {
     type: 'doughnut',
-    data: {
-      labels,
-      datasets: [{
-        data,
-        backgroundColor: labels.map((_, index) => colors[index % colors.length]),
-        borderColor: '#ffffff',
-        borderWidth: 4,
-        hoverOffset: 6,
-      }],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      cutout: '62%',
-      plugins: {
-        legend: { position: 'bottom' },
-      },
-    },
+    data: { labels, datasets: [{ data, backgroundColor: labels.map((_, i) => colors[i % colors.length]), borderColor: '#ffffff', borderWidth: 4, hoverOffset: 6 }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'bottom' } } },
   });
 }
 
@@ -137,5 +134,6 @@ function bindCharts() {
 document.addEventListener('DOMContentLoaded', () => {
   bindCopyButtons();
   bindQrButtons();
+  bindMobileMenu();
   bindCharts();
 });

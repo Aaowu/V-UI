@@ -47,6 +47,7 @@ ACCESS_EVENTS_RETENTION_DAYS = 14
 SAMPLE_RETENTION_DAYS = 30
 DISPLAY_TZ = ZoneInfo(os.getenv("PANEL_TIMEZONE", "Asia/Shanghai"))
 DISPLAY_TZ_LABEL = os.getenv("PANEL_TIMEZONE_LABEL", "北京时间 (UTC+8)")
+PANEL_SERVICE_NAME = os.getenv("PANEL_SERVICE_NAME", "vui-plan")
 
 app = FastAPI(title=DEFAULT_PANEL_TITLE)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -1181,21 +1182,21 @@ def trim_log_file(path: Path, max_mb: int) -> None:
 
 
 def manage_service_action(name: str, action: str) -> None:
-    if name not in {'xray', 'nginx', 'icu-panel'}:
+    if name not in {'xray', 'nginx', PANEL_SERVICE_NAME}:
         raise RuntimeError('不支持的服务')
     if action == 'restart':
-        if name == 'icu-panel':
-            subprocess.Popen(['bash', '-lc', 'sleep 1; systemctl restart icu-panel >/dev/null 2>&1'])
+        if name == PANEL_SERVICE_NAME:
+            subprocess.Popen(['bash', '-lc', 'sleep 1; systemctl restart "$0" >/dev/null 2>&1', PANEL_SERVICE_NAME])
         else:
             subprocess.run(['systemctl', 'restart', name], check=True)
         return
     if action == 'enable':
-        if name == 'icu-panel':
+        if name == PANEL_SERVICE_NAME:
             raise RuntimeError('面板服务默认建议保持开机自启')
         subprocess.run(['systemctl', 'enable', name], check=True)
         return
     if action == 'disable':
-        if name == 'icu-panel':
+        if name == PANEL_SERVICE_NAME:
             raise RuntimeError('为避免自锁，面板服务不提供关闭开机自启')
         subprocess.run(['systemctl', 'disable', name], check=True)
         return
@@ -1537,14 +1538,15 @@ def build_common_context(request: Request, user: sqlite3.Row, active_nav: str, e
         "audit": get_recent_audit(),
         "system_info": get_system_info(),
         "admin_users": get_admin_users(),
+        "panel_service_name": PANEL_SERVICE_NAME,
         "service_status": {
             "xray": service_status("xray"),
-            "panel": service_status("icu-panel"),
+            "panel": service_status(PANEL_SERVICE_NAME),
             "nginx": service_status("nginx"),
         },
         "service_enabled": {
             "xray": service_enabled("xray"),
-            "panel": service_enabled("icu-panel"),
+            "panel": service_enabled(PANEL_SERVICE_NAME),
             "nginx": service_enabled("nginx"),
         },
     }
