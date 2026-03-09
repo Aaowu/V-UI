@@ -205,10 +205,11 @@ uvicorn app:app --host 127.0.0.1 --port 9200 --reload
 ## 常用命令
 
 ```bash
-systemctl status icu-panel
-systemctl restart icu-panel
-journalctl -u icu-panel -f
+systemctl status vui-plan
+systemctl restart vui-plan
+journalctl -u vui-plan -f
 
 systemctl status xray
+systemctl restart xray
 journalctl -u xray -f
 ```
