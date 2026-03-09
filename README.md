@@ -193,27 +193,6 @@ pip install -r requirements.txt
 uvicorn app:app --host 127.0.0.1 --port 9200 --reload
 ```
 
-## 发布到 GitHub 前
-
-如果你平时是在 `/root/vui-plan` 里开发、在 `/root/V-UI` 里发布，建议先阅读完整流程文档：
-
-- `docs/PUBLISH_WORKFLOW.md`
-
-它包含：同步代码、脱敏、校验、提交、推送 GitHub 的完整步骤。
-
-执行：
-
-```bash
-bash scripts/release-sanitize.sh
-```
-
-这个脚本会：
-- 清理本地 `.venv`
-- 清理 `data/panel.db`
-- 清理 `data/admin_credentials.txt`
-- 清理 `__pycache__`
-- 粗扫常见敏感信息模式
-
 ## 常用文件
 
 - 主程序：`app.py`
