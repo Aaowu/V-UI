@@ -14,6 +14,8 @@ for target in [
     root / '__pycache__',
     root / 'data' / 'panel.db',
     root / 'data' / 'admin_credentials.txt',
+    root / 'docker-data' / 'panel.db',
+    root / 'docker-data' / 'admin_credentials.txt',
 ]:
     if target.is_dir():
         shutil.rmtree(target)
@@ -23,7 +25,7 @@ PY
 
 echo "[INFO] 扫描常见敏感信息..."
 rg -n 'BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY|XRAY_REALITY_PRIVATE_KEY=|set-cookie:|subscription-userinfo: upload=|api_token|secret|password=' . \
-  --glob '!data/**' --glob '!.venv/**' --glob '!static/vendor/**' || true
+  --glob '!data/**' --glob '!docker-data/**' --glob '!.venv/**' --glob '!static/vendor/**' || true
 
 echo
 cat <<MSG
@@ -33,4 +35,5 @@ cat <<MSG
 - 截图 / GIF / issue 模板中是否出现真实域名或账号
 - .env 是否没有被提交
 - data/ 目录中是否没有敏感内容
+- docker-data/ 目录中是否没有敏感内容
 MSG

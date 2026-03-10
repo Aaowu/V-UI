@@ -16,4 +16,7 @@ data/admin_credentials.txt
 data/panel.db
 data/*.db
 data/*.sqlite3
+docker-data/
+docker-data/*.db
+docker-data/*.sqlite3
 /tmp/

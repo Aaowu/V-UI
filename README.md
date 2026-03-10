@@ -1,42 +1,11 @@
 # V UI
 
-[![CI](https://github.com/Aaowu/V-UI/actions/workflows/ci.yml/badge.svg)](https://github.com/Aaowu/V-UI/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/Aaowu/V-UI)](./LICENSE)
-[![Release Status](https://img.shields.io/badge/status-active-success)](https://github.com/Aaowu/V-UI)
-[![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/)
-
 一个面向 `Xray + VLESS + REALITY (xtls-rprx-vision)` 的轻量控制面板。
 
 适合：
 - 自用
 - 偶尔分享给朋友
 - 需要直接管理链接、流量上限、已用流量、订阅导入、访问活动明细
-
-## 特点
-
-- 轻量：`FastAPI + Jinja2 + SQLite`
-- 友好：一键安装脚本支持交互式输入
-- 清晰：主账号 / 朋友账号权限分层
-- 实用：支持总流量池、多链接共享额度、客户端流量头
-- 可观测：活动明细、访问目标、近 24 小时趋势图
-
-## 界面概览
-
-当前内置页面：
-- 概览
-- 链接管理
-- 活动明细
-- 系统设置
-
-### 页面截图
-
-**1. 概览页**
-
-![概览页](./1.png)
-
-**2. 链接管理页**
-
-![链接管理页](./2.png)
 
 ## 功能
 
@@ -88,47 +57,26 @@
 
 ## 一键安装
 
-**注意：当前这份一键安装脚本是“完整面板模式”，至少需要你准备一个已经解析到服务器的域名。**
-
-脚本已经收口成“小白模式”：
-- 直接运行时，默认只问你域名
-- 证书路径会自动按 Let's Encrypt 默认路径推导
-- 如果证书不存在，会自动尝试申请证书
-- Reality 的 `Server Domain / SNI / Target` 都会自动推导
-- 安装前会尽量检查域名解析是否指向当前服务器，并提醒你确认 80/443 已放行
-
-默认情况下，最少只需要提供：
-
-```bash
-DOMAIN=panel.example.com
-```
-
-其余参数默认会这样处理：
-
-```bash
-TLS_CERT=/etc/letsencrypt/live/<DOMAIN>/fullchain.pem
-TLS_KEY=/etc/letsencrypt/live/<DOMAIN>/privkey.pem
-REALITY_SERVER_DOMAIN=<DOMAIN>
-REALITY_SNI=<DOMAIN>
-REALITY_TARGET=127.0.0.1:443
-```
-
 这个仓库自带的一键安装脚本会自动完成：
 - 安装官方 `Xray`（如果系统里还没有）
 - 生成 `VLESS + REALITY + xtls-rprx-vision`
 - 写入 `Xray API` / `access log` / `error log`
 - 安装本面板
-- 写入 `systemd`
+- 默认以 Docker 方式运行面板
 - 写入 `nginx` 反代配置
 - 打开 Reality 端口并尝试持久化防火墙规则
+
+默认部署形态是：
+
+- `Xray / nginx` 继续跑在宿主机
+- `vui-plan` 面板跑在 Docker
+- 宿主机 `nginx` 继续反代到 `127.0.0.1:9200`
 
 ### 1. 准备证书和域名
 
 你需要先有：
 - 一个可解析到 VPS 的域名
-- 80/443 端口可正常访问
-
-如果系统里还没有证书，安装脚本会自动尝试申请 Let's Encrypt 证书。
+- 一张可用的 HTTPS 证书
 
 ### 2. 准备配置
 
@@ -136,35 +84,21 @@ REALITY_TARGET=127.0.0.1:443
 cp .env.example .env
 ```
 
-最少只需要填写：
+至少修改：
 
 ```bash
 DOMAIN=panel.example.com
-```
-
-如果你希望自定义端口或证书邮箱，可以再额外填写：
-
-```bash
-PANEL_PORT=9200
-REALITY_PORT=30828
-CERTBOT_EMAIL=you@example.com
+TLS_CERT=/etc/letsencrypt/live/panel.example.com/fullchain.pem
+TLS_KEY=/etc/letsencrypt/live/panel.example.com/privkey.pem
+PANEL_RUNTIME=docker
+REALITY_SERVER_DOMAIN=panel.example.com
+REALITY_SNI=panel.example.com
 ```
 
 ### 3. 执行安装
 
-直接运行会进入交互式提问：
-
 ```bash
 bash scripts/install.sh
-```
-
-示例交互：
-
-```text
-[INFO] 进入交互式安装模式
-请输入面板域名 (例如 panel.example.com): panel.example.com
-请输入面板监听端口 [9200]:
-请输入 Reality 端口 [30828]:
 ```
 
 也可以直接临时传参：
@@ -182,7 +116,7 @@ bash scripts/install.sh
 - 面板登录地址
 - 初始主账号文件位置
 - 默认 `VLESS Reality Vision` 链接
-- 常用管理命令
+- 面板 Docker 启停命令
 
 ## 本地开发
 
@@ -193,23 +127,104 @@ pip install -r requirements.txt
 uvicorn app:app --host 127.0.0.1 --port 9200 --reload
 ```
 
+## Docker 运行
+
+当前仓库默认推荐这条路径：
+
+- `Xray / nginx` 继续跑在宿主机
+- 只把 `vui-plan` 面板放进 Docker
+- 容器通过挂载宿主机的 `Xray` 配置、日志、二进制和数据目录继续工作
+
+仓库已经提供：
+
+- `Dockerfile`
+- `docker-compose.yml`
+
+默认 `docker-compose.yml` 采用 `network_mode: host`，这样它可以继续访问宿主机上的 `127.0.0.1:10085` Xray API，也能继续配合现有的宿主机 `nginx -> 127.0.0.1:9200` 反代。
+
+### 迁移步骤
+
+先停止原来的 `systemd` 面板服务，避免和容器同时占用 `9200`：
+
+```bash
+systemctl stop vui-plan
+systemctl disable vui-plan
+```
+
+然后在项目目录执行：
+
+```bash
+bash scripts/migrate-to-docker.sh
+```
+
+查看状态：
+
+```bash
+bash scripts/panel-docker.sh status
+bash scripts/panel-docker.sh logs
+curl http://127.0.0.1:9200/healthz
+```
+
+### Docker 模式的限制
+
+- 默认不会在容器内直接控制宿主机 `systemd`
+- 所以涉及 `Xray` 配置变更的操作，会先写入配置，再提示你去宿主机手动执行 `systemctl restart xray`
+- 设置页里的服务控制按钮会根据当前运行模式自动降级
+- 如果你确实要让容器代管宿主机服务，可以额外设置 `PANEL_SYSTEMCTL_COMMAND`，但这取决于你的 Docker 权限、挂载方式和宿主机环境，默认 compose 没有启用这条路径
+
+如果你是直接用 `http://IP:9200` 访问容器，而不是走现有 HTTPS 反代，请把：
+
+```bash
+PANEL_SESSION_COOKIE_SECURE=0
+```
+
+否则浏览器不会在纯 HTTP 下带回登录 Cookie。
+
+## 发布到 GitHub 前
+
+如果你平时是在 `/root/vui-plan` 里开发、在 `/root/V-UI` 里发布，建议先阅读完整流程文档：
+
+- `docs/PUBLISH_WORKFLOW.md`
+
+它包含：同步代码、脱敏、校验、提交、推送 GitHub 的完整步骤。
+
+执行：
+
+```bash
+bash scripts/release-sanitize.sh
+```
+
+这个脚本会：
+- 清理本地 `.venv`
+- 清理 `data/panel.db`
+- 清理 `data/admin_credentials.txt`
+- 清理 `docker-data/panel.db`
+- 清理 `docker-data/admin_credentials.txt`
+- 清理 `__pycache__`
+- 粗扫常见敏感信息模式
+
 ## 常用文件
 
 - 主程序：`app.py`
 - 模板：`templates/`
 - 静态资源：`static/`
 - 一键安装：`scripts/install.sh`
+- Docker 启停：`scripts/panel-docker.sh`
+- 旧实例迁移到 Docker：`scripts/migrate-to-docker.sh`
 - 发布前脱敏：`scripts/release-sanitize.sh`
 - 示例配置：`.env.example`
 
 ## 常用命令
 
 ```bash
-systemctl status vui-plan
-systemctl restart vui-plan
-journalctl -u vui-plan -f
+bash scripts/panel-docker.sh up
+bash scripts/panel-docker.sh status
+bash scripts/panel-docker.sh logs
 
 systemctl status xray
 systemctl restart xray
 journalctl -u xray -f
+
+systemctl status nginx
+systemctl reload nginx
 ```

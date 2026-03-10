@@ -1,11 +1,13 @@
 import calendar
 import hashlib
 import json
+import logging
 import os
 import platform
 import shutil
 import re
 import secrets
+import shlex
 import sqlite3
 import subprocess
 import threading
@@ -22,6 +24,14 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANEL_DATA_DIR", str(APP_DIR / "data")))
@@ -51,10 +61,17 @@ SAMPLE_RETENTION_DAYS = 30
 DISPLAY_TZ = ZoneInfo(os.getenv("PANEL_TIMEZONE", "Asia/Shanghai"))
 DISPLAY_TZ_LABEL = os.getenv("PANEL_TIMEZONE_LABEL", "北京时间 (UTC+8)")
 PANEL_SERVICE_NAME = os.getenv("PANEL_SERVICE_NAME", "vui-plan")
+RUNTIME_MODE = (os.getenv("PANEL_RUNTIME_MODE", "systemd") or "systemd").strip().lower()
+if RUNTIME_MODE not in {"systemd", "docker"}:
+    RUNTIME_MODE = "systemd"
+PANEL_SESSION_COOKIE_SECURE = env_flag("PANEL_SESSION_COOKIE_SECURE", True)
+PANEL_MANAGE_FIREWALL = env_flag("PANEL_MANAGE_FIREWALL", RUNTIME_MODE == "systemd")
+SYSTEMCTL_COMMAND = shlex.split(os.getenv("PANEL_SYSTEMCTL_COMMAND", "systemctl" if RUNTIME_MODE == "systemd" else ""))
 
 app = FastAPI(title=DEFAULT_PANEL_TITLE)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+logger = logging.getLogger("uvicorn.error")
 
 stop_event = threading.Event()
 poller_thread: threading.Thread | None = None
@@ -309,7 +326,16 @@ def parse_env_file(path: Path) -> dict[str, str]:
 
 
 def load_xray_config() -> dict[str, Any]:
+    if not XRAY_CONFIG_PATH.exists():
+        raise FileNotFoundError(f"未找到 Xray 配置文件：{XRAY_CONFIG_PATH}")
     return json.loads(XRAY_CONFIG_PATH.read_text())
+
+
+def load_xray_config_if_exists() -> dict[str, Any] | None:
+    try:
+        return load_xray_config()
+    except FileNotFoundError:
+        return None
 
 
 def save_xray_config(config: dict[str, Any]) -> None:
@@ -327,6 +353,8 @@ def get_vless_inbound(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def xray_x25519() -> tuple[str, str]:
+    if not XRAY_BIN.exists():
+        raise RuntimeError(f"未找到 Xray 可执行文件：{XRAY_BIN}")
     result = subprocess.run([str(XRAY_BIN), "x25519"], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "生成 x25519 失败")
@@ -344,21 +372,35 @@ def xray_x25519() -> tuple[str, str]:
 
 
 def ensure_default_settings_from_xray() -> None:
-    config = load_xray_config()
-    inbound = get_vless_inbound(config)
-    reality = inbound.get("streamSettings", {}).get("realitySettings", {})
+    config = load_xray_config_if_exists()
+    inbound: dict[str, Any] = {}
+    reality: dict[str, Any] = {}
+    if config:
+        try:
+            inbound = get_vless_inbound(config)
+            reality = inbound.get("streamSettings", {}).get("realitySettings", {})
+        except Exception as exc:
+            logger.warning("LOAD_XRAY_DEFAULTS_FAIL %s", exc)
     env = parse_env_file(XRAY_ENV_PATH)
     settings = get_settings()
+    sni_default = env.get("XRAY_REALITY_SNI") or (reality.get("serverNames") or [DEFAULT_SERVER_DOMAIN])[0]
+    port_default = env.get("XRAY_REALITY_PORT") or inbound.get("port") or 30828
+    flow_default = settings.get("flow") or DEFAULT_FLOW
+    clients = inbound.get("settings", {}).get("clients", [{}])
+    if clients:
+        flow_default = clients[0].get("flow", flow_default)
+    private_key_default = reality.get("privateKey") or env.get("XRAY_REALITY_PRIVATE_KEY") or settings.get("private_key", "")
+    public_key_default = env.get("XRAY_REALITY_PUBLIC_KEY") or settings.get("public_key", "")
     defaults = {
         "panel_title": DEFAULT_PANEL_TITLE,
         "announcement": "",
         "server_domain": env.get("XRAY_REALITY_SERVER", DEFAULT_SERVER_DOMAIN),
-        "sni": env.get("XRAY_REALITY_SNI", (reality.get("serverNames") or [DEFAULT_SERVER_DOMAIN])[0]),
-        "port": str(inbound.get("port", 30828)),
-        "flow": inbound.get("settings", {}).get("clients", [{}])[0].get("flow", DEFAULT_FLOW),
+        "sni": sni_default,
+        "port": str(port_default),
+        "flow": flow_default,
         "short_id": (reality.get("shortIds") or [secrets.token_hex(8)])[0],
-        "public_key": env.get("XRAY_REALITY_PUBLIC_KEY", ""),
-        "private_key": reality.get("privateKey", env.get("XRAY_REALITY_PRIVATE_KEY", "")),
+        "public_key": public_key_default,
+        "private_key": private_key_default,
         "target": env.get("XRAY_REALITY_TARGET", reality.get("dest", "127.0.0.1:443")),
         "access_log_offset": settings.get("access_log_offset", "0"),
         "max_traffic_rows": settings.get("max_traffic_rows", "5000"),
@@ -367,9 +409,12 @@ def ensure_default_settings_from_xray() -> None:
         "max_error_log_mb": settings.get("max_error_log_mb", "16"),
     }
     if not defaults["private_key"] or not defaults["public_key"]:
-        private_key, public_key = xray_x25519()
-        defaults["private_key"] = private_key
-        defaults["public_key"] = public_key
+        try:
+            private_key, public_key = xray_x25519()
+            defaults["private_key"] = defaults["private_key"] or private_key
+            defaults["public_key"] = defaults["public_key"] or public_key
+        except Exception as exc:
+            logger.warning("XRAY_KEY_BOOTSTRAP_SKIP %s", exc)
     for key, value in defaults.items():
         if key not in settings:
             set_setting(key, str(value))
@@ -393,6 +438,29 @@ def get_session_token(request: Request) -> str | None:
         if token:
             return token
     return None
+
+
+def get_client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for:
+        client_ip = forwarded_for.split(",", 1)[0].strip()
+        if client_ip:
+            return client_ip
+    if request.client and request.client.host:
+        return request.client.host
+    return "-"
+
+
+def set_session_cookie(response: RedirectResponse, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=PANEL_SESSION_COOKIE_SECURE,
+        path="/",
+        max_age=int(timedelta(days=SESSION_TTL_DAYS).total_seconds()),
+    )
 
 def ensure_admin_user() -> None:
     with closing(db()) as conn:
@@ -419,8 +487,14 @@ def bootstrap_links_from_xray() -> None:
             return
         owner = conn.execute("SELECT id FROM admin_users WHERE role='owner' ORDER BY id LIMIT 1").fetchone()
         owner_id = owner['id'] if owner else None
-        config = load_xray_config()
-        inbound = get_vless_inbound(config)
+        config = load_xray_config_if_exists()
+        if not config:
+            return
+        try:
+            inbound = get_vless_inbound(config)
+        except Exception as exc:
+            logger.warning("BOOTSTRAP_LINKS_SKIP %s", exc)
+            return
         clients = inbound.get("settings", {}).get("clients", [])
         now = now_iso()
         for index, client in enumerate(clients, start=1):
@@ -598,6 +672,30 @@ def run_command(command: list[str]) -> tuple[int, str, str]:
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
+def can_manage_system_services() -> bool:
+    return bool(SYSTEMCTL_COMMAND)
+
+
+def run_systemctl(*args: str) -> tuple[int, str, str]:
+    if not can_manage_system_services():
+        return 127, "", "未配置服务管理命令"
+    return run_command([*SYSTEMCTL_COMMAND, *args])
+
+
+def restart_panel_container_later(delay_seconds: float = 1.0) -> None:
+    def _exit_process() -> None:
+        time.sleep(delay_seconds)
+        os._exit(0)
+
+    threading.Thread(target=_exit_process, daemon=True).start()
+
+
+def apply_result_message(message: str, note: str | None) -> tuple[str, str]:
+    if not note:
+        return message, "success"
+    return f"{message}；{note}", "info"
+
+
 def xray_api_json(*args: str) -> dict[str, Any] | None:
     command = [str(XRAY_BIN), "api", *args, f"--server={XRAY_API_SERVER}"]
     code, stdout, stderr = run_command(command)
@@ -771,7 +869,18 @@ def get_account_usage_map() -> dict[int, dict[str, int]]:
     return result
 
 
-def apply_xray_config(reason: str) -> None:
+def restart_xray_after_apply() -> str | None:
+    if can_manage_system_services():
+        code, stdout, stderr = run_systemctl("restart", "xray")
+        if code != 0:
+            raise RuntimeError(stderr or stdout or "Xray 重启失败")
+        return None
+    if RUNTIME_MODE == "docker":
+        return "Xray 配置已写入，请在宿主机手动重启 Xray"
+    raise RuntimeError("未配置可用的 Xray 重启方式")
+
+
+def apply_xray_config(reason: str) -> str | None:
     settings = get_current_settings()
     ensure_xray_log_permissions()
     config = load_xray_config()
@@ -830,12 +939,12 @@ def apply_xray_config(reason: str) -> None:
     code, stdout, stderr = run_command([str(XRAY_BIN), "run", "-test", "-config", str(XRAY_CONFIG_PATH)])
     if code != 0:
         raise RuntimeError(stderr or stdout or "Xray 配置校验失败")
-    set_managed_firewall_port(inbound["port"])
+    if PANEL_MANAGE_FIREWALL:
+        set_managed_firewall_port(inbound["port"])
     write_env_file(settings)
-    restart = subprocess.run(["systemctl", "restart", "xray"], capture_output=True, text=True)
-    if restart.returncode != 0:
-        raise RuntimeError(restart.stderr.strip() or restart.stdout.strip() or "Xray 重启失败")
+    note = restart_xray_after_apply()
     add_audit("xray_apply", reason)
+    return note
 
 
 def current_cycle_start(now: datetime, reset_day: int) -> datetime:
@@ -967,9 +1076,10 @@ def parse_access_log_incrementally() -> None:
     runtime_state["last_access_parse_error"] = None
 
 
-def poll_once() -> None:
+def poll_once() -> str | None:
     disabled_names: list[str] = []
     reenabled_names: list[str] = []
+    apply_note: str | None = None
     now = now_utc()
     with closing(db()) as conn:
         rows = conn.execute("SELECT * FROM links ORDER BY id ASC").fetchall()
@@ -1071,19 +1181,20 @@ def poll_once() -> None:
         conn.commit()
     trim_table_rows('traffic_samples', int(get_current_settings()['max_traffic_rows']))
     if disabled_names or reenabled_names:
-        apply_xray_config("poll_status_change")
+        apply_note = apply_xray_config("poll_status_change")
         if disabled_names:
             add_audit("auto_disable", f"自动停用: {', '.join(sorted(set(disabled_names)))}")
         if reenabled_names:
             add_audit("auto_reenable", f"按月重置后恢复: {', '.join(sorted(set(reenabled_names)))}")
+    return apply_note
 
 
 def poll_loop() -> None:
     while not stop_event.is_set():
         try:
-            poll_once()
+            note = poll_once()
             runtime_state["last_sync_at"] = now_iso()
-            runtime_state["last_sync_error"] = None
+            runtime_state["last_sync_error"] = note
         except Exception as exc:
             runtime_state["last_sync_error"] = str(exc)
         try:
@@ -1119,7 +1230,18 @@ def get_current_user(request: Request) -> sqlite3.Row:
     with closing(db()) as conn:
         row = conn.execute(
             """
-            SELECT sessions.*, admin_users.username, admin_users.role, admin_users.password_hash, admin_users.salt
+            SELECT
+                sessions.*,
+                admin_users.id AS id,
+                admin_users.username,
+                admin_users.role,
+                admin_users.password_hash,
+                admin_users.salt,
+                admin_users.link_id,
+                admin_users.quota_bytes,
+                admin_users.reset_day,
+                admin_users.last_reset_at,
+                admin_users.status_reason
             FROM sessions
             JOIN admin_users ON admin_users.id = sessions.user_id
             WHERE sessions.token = ?
@@ -1155,15 +1277,31 @@ def redirect_with_message(path: str, message: str, level: str = "success") -> Re
     return RedirectResponse(url=f"{path}?{query}", status_code=status.HTTP_303_SEE_OTHER)
 
 
+def service_restart_supported(name: str) -> bool:
+    if name == PANEL_SERVICE_NAME and RUNTIME_MODE == "docker":
+        return True
+    return can_manage_system_services()
+
+
+def service_toggle_supported(name: str) -> bool:
+    return name != PANEL_SERVICE_NAME and can_manage_system_services()
+
+
 def service_status(name: str) -> str:
-    code, stdout, _ = run_command(["systemctl", "is-active", name])
+    if name == PANEL_SERVICE_NAME and RUNTIME_MODE == "docker":
+        return "docker"
+    if not can_manage_system_services():
+        return "external"
+    code, stdout, _ = run_systemctl("is-active", name)
     if code == 0:
         return stdout or "active"
     return stdout or "inactive"
 
 
 def service_enabled(name: str) -> bool:
-    code, stdout, _ = run_command(["systemctl", "is-enabled", name])
+    if not can_manage_system_services():
+        return False
+    code, stdout, _ = run_systemctl("is-enabled", name)
     return code == 0 and stdout.strip() == 'enabled'
 
 
@@ -1208,19 +1346,39 @@ def manage_service_action(name: str, action: str) -> None:
         raise RuntimeError('不支持的服务')
     if action == 'restart':
         if name == PANEL_SERVICE_NAME:
-            subprocess.Popen(['bash', '-lc', 'sleep 1; systemctl restart "$0" >/dev/null 2>&1', PANEL_SERVICE_NAME])
-        else:
-            subprocess.run(['systemctl', 'restart', name], check=True)
+            if RUNTIME_MODE == "docker":
+                restart_panel_container_later()
+                return
+            if not can_manage_system_services():
+                raise RuntimeError('当前运行模式未配置面板服务重启命令')
+            def _restart_panel_service() -> None:
+                time.sleep(1)
+                run_systemctl("restart", PANEL_SERVICE_NAME)
+            threading.Thread(target=_restart_panel_service, daemon=True).start()
+            return
+        if not can_manage_system_services():
+            raise RuntimeError(f'当前运行模式未配置 {name} 服务控制，请在宿主机手动处理')
+        code, stdout, stderr = run_systemctl("restart", name)
+        if code != 0:
+            raise RuntimeError(stderr or stdout or f'{name} 重启失败')
         return
     if action == 'enable':
         if name == PANEL_SERVICE_NAME:
             raise RuntimeError('面板服务默认建议保持开机自启')
-        subprocess.run(['systemctl', 'enable', name], check=True)
+        if not can_manage_system_services():
+            raise RuntimeError(f'当前运行模式未配置 {name} 服务自启控制')
+        code, stdout, stderr = run_systemctl("enable", name)
+        if code != 0:
+            raise RuntimeError(stderr or stdout or f'{name} 开启自启失败')
         return
     if action == 'disable':
         if name == PANEL_SERVICE_NAME:
             raise RuntimeError('为避免自锁，面板服务不提供关闭开机自启')
-        subprocess.run(['systemctl', 'disable', name], check=True)
+        if not can_manage_system_services():
+            raise RuntimeError(f'当前运行模式未配置 {name} 服务自启控制')
+        code, stdout, stderr = run_systemctl("disable", name)
+        if code != 0:
+            raise RuntimeError(stderr or stdout or f'{name} 关闭自启失败')
         return
     raise RuntimeError('不支持的操作')
 
@@ -1561,6 +1719,8 @@ def build_common_context(request: Request, user: sqlite3.Row, active_nav: str, e
         "system_info": get_system_info(),
         "admin_users": get_admin_users(),
         "panel_service_name": PANEL_SERVICE_NAME,
+        "runtime_mode": RUNTIME_MODE,
+        "service_manager_available": can_manage_system_services(),
         "service_status": {
             "xray": service_status("xray"),
             "panel": service_status(PANEL_SERVICE_NAME),
@@ -1570,6 +1730,20 @@ def build_common_context(request: Request, user: sqlite3.Row, active_nav: str, e
             "xray": service_enabled("xray"),
             "panel": service_enabled(PANEL_SERVICE_NAME),
             "nginx": service_enabled("nginx"),
+        },
+        "service_actions": {
+            "xray": {
+                "restart": service_restart_supported("xray"),
+                "toggle": service_toggle_supported("xray"),
+            },
+            "panel": {
+                "restart": service_restart_supported(PANEL_SERVICE_NAME),
+                "toggle": service_toggle_supported(PANEL_SERVICE_NAME),
+            },
+            "nginx": {
+                "restart": service_restart_supported("nginx"),
+                "toggle": service_toggle_supported("nginx"),
+            },
         },
     }
     if extra:
@@ -1626,24 +1800,18 @@ def login_page(request: Request) -> HTMLResponse:
 
 
 @app.post("/login")
-def login_submit(username: str = Form(...), password: str = Form(...)) -> RedirectResponse:
+def login_submit(request: Request, username: str = Form(...), password: str = Form(...)) -> RedirectResponse:
+    normalized_username = username.strip()
     with closing(db()) as conn:
-        row = conn.execute("SELECT * FROM admin_users WHERE username = ?", (username.strip(),)).fetchone()
+        row = conn.execute("SELECT * FROM admin_users WHERE username = ?", (normalized_username,)).fetchone()
         if not row or not verify_password(password, row["salt"], row["password_hash"]):
+            logger.warning("AUTH_FAIL username=%s ip=%s", normalized_username or "-", get_client_ip(request))
             return redirect_with_message("/login", "用户名或密码不正确", "error")
         conn.execute("UPDATE admin_users SET last_login_at = ? WHERE id = ?", (now_iso(), row["id"]))
         conn.commit()
     token = create_session(row["id"])
     response = RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
-    response.set_cookie(
-        SESSION_COOKIE_NAME,
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=True,
-        path="/",
-        max_age=int(timedelta(days=SESSION_TTL_DAYS).total_seconds()),
-    )
+    set_session_cookie(response, token)
     return response
 
 
@@ -1761,10 +1929,11 @@ def update_general_settings(
     set_setting("short_id", short_id_clean)
     set_setting("target", target.strip())
     try:
-        apply_xray_config(f"general_settings_by:{user['username']}")
+        note = apply_xray_config(f"general_settings_by:{user['username']}")
     except Exception as exc:
         return redirect_with_message("/settings", f"保存成功，但应用失败：{exc}", "error")
-    return redirect_with_message("/settings", "全局参数已更新")
+    message, level = apply_result_message("全局参数已更新", note)
+    return redirect_with_message("/settings", message, level)
 
 
 @app.post("/settings/rotate-shortid")
@@ -1774,10 +1943,11 @@ def rotate_shortid(user: sqlite3.Row = Depends(get_current_user)) -> RedirectRes
         return denied
     set_setting("short_id", secrets.token_hex(8))
     try:
-        apply_xray_config(f"rotate_shortid_by:{user['username']}")
+        note = apply_xray_config(f"rotate_shortid_by:{user['username']}")
     except Exception as exc:
         return redirect_with_message("/settings", f"Short ID 轮换失败：{exc}", "error")
-    return redirect_with_message("/settings", "Short ID 已轮换")
+    message, level = apply_result_message("Short ID 已轮换", note)
+    return redirect_with_message("/settings", message, level)
 
 
 @app.post("/settings/rotate-keys")
@@ -1789,14 +1959,16 @@ def rotate_reality_keys(user: sqlite3.Row = Depends(get_current_user)) -> Redire
         private_key, public_key = xray_x25519()
         set_setting("private_key", private_key)
         set_setting("public_key", public_key)
-        apply_xray_config(f"rotate_keys_by:{user['username']}")
+        note = apply_xray_config(f"rotate_keys_by:{user['username']}")
     except Exception as exc:
         return redirect_with_message("/settings", f"Reality 密钥轮换失败：{exc}", "error")
-    return redirect_with_message("/settings", "Reality 密钥已轮换")
+    message, level = apply_result_message("Reality 密钥已轮换", note)
+    return redirect_with_message("/settings", message, level)
 
 
 @app.post("/settings/password")
 def change_password(
+    request: Request,
     current_password: str = Form(...),
     new_password: str = Form(...),
     user: sqlite3.Row = Depends(get_current_user),
@@ -1809,11 +1981,16 @@ def change_password(
     password_hash = hash_password(new_password, salt)
     with closing(db()) as conn:
         conn.execute("UPDATE admin_users SET password_hash = ?, salt = ? WHERE id = ?", (password_hash, salt, user["id"]))
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
         conn.commit()
+    token = create_session(user["id"])
     if is_owner(user):
         sync_owner_credentials_file(user['username'], new_password)
     add_audit("change_password", f"user={user['username']}")
-    return redirect_with_message("/settings", "登录密码已更新")
+    response = redirect_with_message("/settings", "登录密码已更新，其他会话已全部退出")
+    set_session_cookie(response, token)
+    logger.info("AUTH_SESSIONS_RESET username=%s ip=%s", user["username"], get_client_ip(request))
+    return response
 
 
 @app.post("/settings/username")
@@ -1898,11 +2075,12 @@ def delete_admin_user(user_id: int, user: sqlite3.Row = Depends(get_current_user
             conn.execute("DELETE FROM links WHERE id = ?", (target['link_id'],))
         conn.commit()
     try:
-        apply_xray_config(f"delete_admin_user_by:{user['username']}")
+        note = apply_xray_config(f"delete_admin_user_by:{user['username']}")
     except Exception as exc:
         return redirect_with_message("/settings", f"用户已删除，但应用失败：{exc}", "error")
     add_audit("delete_admin_user", f"user_id={user_id} by {user['username']}")
-    return redirect_with_message("/settings", "用户已删除")
+    message, level = apply_result_message("用户已删除", note)
+    return redirect_with_message("/settings", message, level)
 
 
 @app.post("/settings/storage")
@@ -2005,10 +2183,11 @@ def create_link(
         except sqlite3.IntegrityError:
             return redirect_with_message("/links", "邮箱已存在，请换一个", "error")
     try:
-        apply_xray_config(f"create_link_by:{user['username']}")
+        note = apply_xray_config(f"create_link_by:{user['username']}")
     except Exception as exc:
         return redirect_with_message("/links", f"链接已创建，但应用失败：{exc}", "error")
-    return redirect_with_message("/links", "链接已创建")
+    message, level = apply_result_message("链接已创建", note)
+    return redirect_with_message("/links", message, level)
 
 
 @app.post("/links/{link_id}/update")
@@ -2068,10 +2247,11 @@ def update_link(
         except sqlite3.IntegrityError:
             return redirect_with_message("/links", "邮箱重复，更新失败", "error")
     try:
-        apply_xray_config(f"update_link_by:{user['username']}")
+        note = apply_xray_config(f"update_link_by:{user['username']}")
     except Exception as exc:
         return redirect_with_message("/links", f"链接已更新，但应用失败：{exc}", "error")
-    return redirect_with_message("/links", "链接已更新")
+    message, level = apply_result_message("链接已更新", note)
+    return redirect_with_message("/links", message, level)
 
 
 @app.post("/links/{link_id}/toggle")
@@ -2088,10 +2268,11 @@ def toggle_link(link_id: int, user: sqlite3.Row = Depends(get_current_user)) -> 
         conn.execute("UPDATE links SET enabled = ?, status_reason = ?, updated_at = ? WHERE id = ?", (new_enabled, new_reason, now_iso(), link_id))
         conn.commit()
     try:
-        apply_xray_config(f"toggle_link_by:{user['username']}")
+        note = apply_xray_config(f"toggle_link_by:{user['username']}")
     except Exception as exc:
         return redirect_with_message("/links", f"状态已改，但应用失败：{exc}", "error")
-    return redirect_with_message("/links", "链接状态已切换")
+    message, level = apply_result_message("链接状态已切换", note)
+    return redirect_with_message("/links", message, level)
 
 
 @app.post("/links/{link_id}/rotate")
@@ -2104,10 +2285,11 @@ def rotate_link_uuid(link_id: int, user: sqlite3.Row = Depends(get_current_user)
         conn.execute("UPDATE links SET uuid = ?, updated_at = ? WHERE id = ?", (str(uuid.uuid4()), now_iso(), link_id))
         conn.commit()
     try:
-        apply_xray_config(f"rotate_link_uuid_by:{user['username']}")
+        note = apply_xray_config(f"rotate_link_uuid_by:{user['username']}")
     except Exception as exc:
         return redirect_with_message("/links", f"UUID 已轮换，但应用失败：{exc}", "error")
-    return redirect_with_message("/links", "UUID 已轮换")
+    message, level = apply_result_message("UUID 已轮换", note)
+    return redirect_with_message("/links", message, level)
 
 
 @app.post("/links/{link_id}/reset-usage")
@@ -2126,10 +2308,11 @@ def reset_link_usage(link_id: int, user: sqlite3.Row = Depends(get_current_user)
         )
         conn.commit()
     try:
-        apply_xray_config(f"reset_usage_by:{user['username']}")
+        note = apply_xray_config(f"reset_usage_by:{user['username']}")
     except Exception as exc:
         return redirect_with_message("/links", f"流量已重置，但应用失败：{exc}", "error")
-    return redirect_with_message("/links", "流量基线已重置")
+    message, level = apply_result_message("流量基线已重置", note)
+    return redirect_with_message("/links", message, level)
 
 
 @app.post("/links/{link_id}/share-token")
@@ -2157,10 +2340,11 @@ def delete_link(link_id: int, user: sqlite3.Row = Depends(get_current_user)) -> 
         conn.execute("DELETE FROM links WHERE id = ?", (link_id,))
         conn.commit()
     try:
-        apply_xray_config(f"delete_link_by:{user['username']}")
+        note = apply_xray_config(f"delete_link_by:{user['username']}")
     except Exception as exc:
         return redirect_with_message("/links", f"链接已删除，但应用失败：{exc}", "error")
-    return redirect_with_message("/links", "链接已删除")
+    message, level = apply_result_message("链接已删除", note)
+    return redirect_with_message("/links", message, level)
 
 
 @app.get("/subscribe/{token}")

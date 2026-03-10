@@ -17,106 +17,54 @@ fi
 DOMAIN=${DOMAIN:-}
 TLS_CERT=${TLS_CERT:-}
 TLS_KEY=${TLS_KEY:-}
-CERTBOT_EMAIL=${CERTBOT_EMAIL:-}
-INSTALL_DIR=${INSTALL_DIR:-/opt/v-ui}
-SERVICE_NAME=${SERVICE_NAME:-v-ui}
+INSTALL_DIR=${INSTALL_DIR:-/opt/vui-plan}
+SERVICE_NAME=${SERVICE_NAME:-vui-plan}
+PANEL_CONTAINER_NAME=${PANEL_CONTAINER_NAME:-$SERVICE_NAME}
+PANEL_RUNTIME=${PANEL_RUNTIME:-docker}
 PANEL_PORT=${PANEL_PORT:-9200}
 PANEL_USER=${PANEL_USER:-root}
-PANEL_DATA_DIR=${PANEL_DATA_DIR:-/var/lib/v-ui}
+PANEL_DATA_DIR=${PANEL_DATA_DIR:-/var/lib/vui-plan}
 PANEL_TIMEZONE=${PANEL_TIMEZONE:-Asia/Shanghai}
 PANEL_TIMEZONE_LABEL=${PANEL_TIMEZONE_LABEL:-北京时间\ \(UTC+8\)}
+PANEL_DEFAULT_TITLE=${PANEL_DEFAULT_TITLE:-V UI}
+PANEL_SESSION_COOKIE_SECURE=${PANEL_SESSION_COOKIE_SECURE:-1}
 XRAY_CONFIG_PATH=${XRAY_CONFIG_PATH:-/usr/local/etc/xray/config.json}
 XRAY_ENV_PATH=${XRAY_ENV_PATH:-/root/xray-reality-main.env}
 XRAY_BIN=${XRAY_BIN:-/usr/local/bin/xray}
 XRAY_API_SERVER=${XRAY_API_SERVER:-127.0.0.1:10085}
 XRAY_LOG_DIR=${XRAY_LOG_DIR:-/var/log/xray}
 REALITY_PORT=${REALITY_PORT:-30828}
-REALITY_SERVER_DOMAIN=${REALITY_SERVER_DOMAIN:-}
-REALITY_SNI=${REALITY_SNI:-}
+REALITY_SERVER_DOMAIN=${REALITY_SERVER_DOMAIN:-$DOMAIN}
+REALITY_SNI=${REALITY_SNI:-$DOMAIN}
 REALITY_TARGET=${REALITY_TARGET:-127.0.0.1:443}
 REALITY_UUID=${REALITY_UUID:-}
-REALITY_EMAIL=${REALITY_EMAIL:-}
+REALITY_EMAIL=${REALITY_EMAIL:-admin@example.com}
 REALITY_SHORT_ID=${REALITY_SHORT_ID:-}
 REALITY_PRIVATE_KEY=${REALITY_PRIVATE_KEY:-}
 REALITY_PUBLIC_KEY=${REALITY_PUBLIC_KEY:-}
 INSTALL_XRAY_IF_MISSING=${INSTALL_XRAY_IF_MISSING:-1}
 
-prompt_required() {
-  local var_name="$1"
-  local prompt_text="$2"
-  local current_value="${!var_name:-}"
-  if [[ -n "$current_value" ]]; then
-    return 0
-  fi
-  if [[ ! -t 0 ]]; then
-    echo "[ERROR] 缺少必要变量：$var_name"
-    echo "当前运行不是交互式终端，无法继续提示输入。"
-    echo "请改用环境变量方式，例如：DOMAIN=panel.example.com bash scripts/install.sh"
-    exit 1
-  fi
-  while [[ -z "$current_value" ]]; do
-    read -r -p "$prompt_text" current_value
-  done
-  printf -v "$var_name" '%s' "$current_value"
-}
+if [[ "$PANEL_RUNTIME" != "docker" && "$PANEL_RUNTIME" != "systemd" ]]; then
+  echo "[ERROR] PANEL_RUNTIME 仅支持 docker 或 systemd"
+  exit 1
+fi
 
-prompt_default() {
-  local var_name="$1"
-  local prompt_text="$2"
-  local default_value="$3"
-  local current_value="${!var_name:-}"
-  if [[ -n "$current_value" ]]; then
-    return 0
-  fi
-  if [[ ! -t 0 ]]; then
-    printf -v "$var_name" '%s' "$default_value"
-    return 0
-  fi
-  read -r -p "$prompt_text [$default_value]: " current_value
-  current_value=${current_value:-$default_value}
-  printf -v "$var_name" '%s' "$current_value"
-}
+if [[ -z "$DOMAIN" || -z "$TLS_CERT" || -z "$TLS_KEY" ]]; then
+  cat <<MSG
+[ERROR] 缺少必要变量。
+至少需要提供：
+  DOMAIN=panel.example.com
+  TLS_CERT=/etc/letsencrypt/live/panel.example.com/fullchain.pem
+  TLS_KEY=/etc/letsencrypt/live/panel.example.com/privkey.pem
 
-prompt_install_inputs() {
-  if [[ -t 0 ]]; then
-    echo "[INFO] 进入交互式安装模式"
-  fi
-  prompt_required DOMAIN "请输入面板域名 (例如 panel.example.com): "
-  prompt_default PANEL_PORT "请输入面板监听端口" "9200"
-  prompt_default REALITY_PORT "请输入 Reality 端口" "30828"
-  REALITY_SERVER_DOMAIN=${REALITY_SERVER_DOMAIN:-$DOMAIN}
-  REALITY_SNI=${REALITY_SNI:-$DOMAIN}
-  REALITY_EMAIL=${REALITY_EMAIL:-admin@${DOMAIN}}
-  TLS_CERT=${TLS_CERT:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}
-  TLS_KEY=${TLS_KEY:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}
-}
-
-check_domain_and_ports() {
-  echo "[INFO] 检查域名解析与本地端口条件"
-  local public_ip=""
-  public_ip=$(curl -4 -fsS https://api.ipify.org 2>/dev/null || true)
-  local resolved_ips=""
-  resolved_ips=$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | xargs || true)
-  if [[ -n "$public_ip" && -n "$resolved_ips" ]]; then
-    echo "[INFO] 域名解析: $resolved_ips"
-    echo "[INFO] 当前公网 IP: $public_ip"
-    if ! printf '%s
-' "$resolved_ips" | tr ' ' '
-' | grep -qx "$public_ip"; then
-      echo "[ERROR] 域名 $DOMAIN 当前未解析到本机公网 IP ($public_ip)"
-      echo "[ERROR] 请先确认 DNS 解析正确后再继续"
-      exit 1
-    fi
-  else
-    echo "[WARN] 无法完成域名解析或公网 IP 检查，请手工确认 $DOMAIN 已解析到本机"
-  fi
-  if ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)(80|443)$'; then
-    echo "[INFO] 检测到 80/443 端口已有监听，安装时会尝试停掉 nginx 后申请证书"
-  else
-    echo "[INFO] 当前 80/443 端口未被监听"
-  fi
-  echo "[INFO] 请确保云防火墙/安全组已放行 80 和 443"
-}
+示例：
+  DOMAIN=panel.example.com \
+  TLS_CERT=/etc/letsencrypt/live/panel.example.com/fullchain.pem \
+  TLS_KEY=/etc/letsencrypt/live/panel.example.com/privkey.pem \
+  bash scripts/install.sh
+MSG
+  exit 1
+fi
 
 backup_if_exists() {
   local target="$1"
@@ -128,8 +76,26 @@ backup_if_exists() {
 ensure_apt_packages() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y curl unzip ca-certificates nginx python3 python3-venv python3-pip jq tar certbot iptables-persistent netfilter-persistent || \
-    apt-get install -y curl unzip ca-certificates nginx python3 python3-venv python3-pip jq tar certbot
+  apt-get install -y curl unzip ca-certificates nginx python3 python3-venv python3-pip jq tar iptables-persistent netfilter-persistent || \
+    apt-get install -y curl unzip ca-certificates nginx python3 python3-venv python3-pip jq tar
+  if [[ "$PANEL_RUNTIME" == "docker" ]]; then
+    apt-get install -y docker.io docker-compose-plugin || apt-get install -y docker.io
+  fi
+}
+
+ensure_docker_if_needed() {
+  if [[ "$PANEL_RUNTIME" != "docker" ]]; then
+    return 0
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[ERROR] 未找到 docker，请先安装 Docker"
+    exit 1
+  fi
+  systemctl enable --now docker
+  if ! docker compose version >/dev/null 2>&1; then
+    echo "[ERROR] 未找到 docker compose 插件，请安装 docker-compose-plugin"
+    exit 1
+  fi
 }
 
 install_xray_if_needed() {
@@ -180,28 +146,6 @@ generate_keys_if_needed() {
   fi
   if [[ -z "$REALITY_PRIVATE_KEY" || -z "$REALITY_PUBLIC_KEY" ]]; then
     echo "[ERROR] 无法解析 x25519 密钥输出"
-    exit 1
-  fi
-}
-
-issue_certificate_if_needed() {
-  if [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]]; then
-    echo "[INFO] 检测到现有证书，直接使用：$TLS_CERT"
-    return 0
-  fi
-  echo "[INFO] 未检测到证书，开始尝试为 $DOMAIN 自动申请 Let's Encrypt 证书"
-  systemctl stop nginx >/dev/null 2>&1 || true
-  local certbot_args=(certonly --standalone --non-interactive --agree-tos -d "$DOMAIN")
-  if [[ -n "$CERTBOT_EMAIL" ]]; then
-    certbot_args+=(-m "$CERTBOT_EMAIL")
-  else
-    certbot_args+=(--register-unsafely-without-email)
-  fi
-  certbot "${certbot_args[@]}"
-  TLS_CERT=${TLS_CERT:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}
-  TLS_KEY=${TLS_KEY:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}
-  if [[ ! -f "$TLS_CERT" || ! -f "$TLS_KEY" ]]; then
-    echo "[ERROR] 证书申请完成后仍未找到证书文件"
     exit 1
   fi
 }
@@ -290,10 +234,13 @@ XRAY_REALITY_SNI=$REALITY_SNI
 XRAY_REALITY_TARGET=$REALITY_TARGET
 ENV
 
-  "$XRAY_BIN" run -test -config "$XRAY_CONFIG_PATH"
+  $XRAY_BIN run -test -config "$XRAY_CONFIG_PATH"
 }
 
 open_reality_port() {
+  for tool in iptables ip6tables; do
+    command -v "$tool" >/dev/null 2>&1 || continue
+  done
   iptables -C INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'vui-xray-reality' -j ACCEPT 2>/dev/null || \
     iptables -I INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'vui-xray-reality' -j ACCEPT
   ip6tables -C INPUT -p tcp --dport "$REALITY_PORT" -m comment --comment 'vui-xray-reality' -j ACCEPT 2>/dev/null || \
@@ -304,6 +251,60 @@ open_reality_port() {
   systemctl enable netfilter-persistent >/dev/null 2>&1 || true
 }
 
+write_panel_runtime_env() {
+  local xray_config_dir xray_config_base
+  xray_config_dir=$(dirname "$XRAY_CONFIG_PATH")
+  xray_config_base=$(basename "$XRAY_CONFIG_PATH")
+  if [[ "$PANEL_RUNTIME" == "docker" ]]; then
+    cat > "$INSTALL_DIR/.env" <<ENV
+PANEL_BUILD_CONTEXT=.
+PANEL_CONTAINER_NAME=$PANEL_CONTAINER_NAME
+PANEL_RESTART_POLICY=unless-stopped
+PANEL_PORT=$PANEL_PORT
+PANEL_HOST_DATA_DIR=$PANEL_DATA_DIR
+PANEL_SESSION_COOKIE_SECURE=$PANEL_SESSION_COOKIE_SECURE
+PANEL_MANAGE_FIREWALL=0
+PANEL_TIMEZONE=$PANEL_TIMEZONE
+PANEL_TIMEZONE_LABEL="$PANEL_TIMEZONE_LABEL"
+PANEL_DEFAULT_TITLE="$PANEL_DEFAULT_TITLE"
+PANEL_DEFAULT_DOMAIN=$DOMAIN
+PANEL_DEFAULT_FLOW=xtls-rprx-vision
+PANEL_SERVICE_NAME=$SERVICE_NAME
+PANEL_SYSTEMCTL_COMMAND=
+PANEL_HOST_XRAY_CONFIG_DIR=$xray_config_dir
+PANEL_HOST_XRAY_ENV_PATH=$XRAY_ENV_PATH
+PANEL_HOST_XRAY_BIN=$XRAY_BIN
+PANEL_HOST_XRAY_LOG_DIR=$XRAY_LOG_DIR
+XRAY_CONTAINER_CONFIG_DIR=$xray_config_dir
+XRAY_CONTAINER_CONFIG_PATH=$xray_config_dir/$xray_config_base
+XRAY_CONTAINER_ENV_PATH=$XRAY_ENV_PATH
+XRAY_CONTAINER_BIN_PATH=$XRAY_BIN
+XRAY_CONTAINER_LOG_DIR=$XRAY_LOG_DIR
+XRAY_API_SERVER=$XRAY_API_SERVER
+ENV
+    return
+  fi
+
+  cat > "$INSTALL_DIR/.env" <<ENV
+PANEL_DATA_DIR=$PANEL_DATA_DIR
+PANEL_TIMEZONE=$PANEL_TIMEZONE
+PANEL_TIMEZONE_LABEL="$PANEL_TIMEZONE_LABEL"
+PANEL_DEFAULT_TITLE="$PANEL_DEFAULT_TITLE"
+PANEL_DEFAULT_DOMAIN=$DOMAIN
+PANEL_DEFAULT_FLOW=xtls-rprx-vision
+PANEL_SERVICE_NAME=$SERVICE_NAME
+PANEL_RUNTIME_MODE=systemd
+PANEL_SESSION_COOKIE_SECURE=$PANEL_SESSION_COOKIE_SECURE
+PANEL_MANAGE_FIREWALL=1
+PANEL_SYSTEMCTL_COMMAND=systemctl
+XRAY_CONFIG_PATH=$XRAY_CONFIG_PATH
+XRAY_ENV_PATH=$XRAY_ENV_PATH
+XRAY_BIN=$XRAY_BIN
+XRAY_API_SERVER=$XRAY_API_SERVER
+XRAY_LOG_DIR=$XRAY_LOG_DIR
+ENV
+}
+
 install_panel_files() {
   mkdir -p "$INSTALL_DIR" "$PANEL_DATA_DIR"
   local tmpdir
@@ -311,28 +312,23 @@ install_panel_files() {
   trap 'rm -rf "$tmpdir"' RETURN
   tar \
     --exclude='.git' \
+    --exclude='.env' \
     --exclude='.venv' \
     --exclude='data' \
+    --exclude='docker-data' \
     --exclude='node_modules' \
     --exclude='__pycache__' \
     -cf - -C "$ROOT_DIR" . | tar -xf - -C "$tmpdir"
   cp -a "$tmpdir"/. "$INSTALL_DIR"/
-  cat > "$INSTALL_DIR/.env" <<ENV
-PANEL_DATA_DIR=$PANEL_DATA_DIR
-PANEL_TIMEZONE=$PANEL_TIMEZONE
-PANEL_TIMEZONE_LABEL=$PANEL_TIMEZONE_LABEL
-PANEL_DEFAULT_TITLE=V UI
-PANEL_DEFAULT_DOMAIN=$DOMAIN
-PANEL_DEFAULT_FLOW=xtls-rprx-vision
-XRAY_CONFIG_PATH=$XRAY_CONFIG_PATH
-XRAY_ENV_PATH=$XRAY_ENV_PATH
-XRAY_BIN=$XRAY_BIN
-XRAY_API_SERVER=$XRAY_API_SERVER
-XRAY_LOG_DIR=$XRAY_LOG_DIR
-ENV
+  chmod +x "$INSTALL_DIR"/scripts/*.sh
+  write_panel_runtime_env
+}
+
+install_panel_systemd_runtime() {
   python3 -m venv "$INSTALL_DIR/.venv"
   "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip >/dev/null
   "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+  write_panel_service
 }
 
 write_panel_service() {
@@ -417,57 +413,81 @@ path.write_text(text)
 PY
 }
 
+wait_for_panel_health() {
+  for _ in $(seq 1 20); do
+    if curl -fsS "http://127.0.0.1:${PANEL_PORT}/healthz" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[ERROR] 面板在预期时间内未返回健康检查"
+  exit 1
+}
+
+start_panel_docker_runtime() {
+  systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+  (cd "$INSTALL_DIR" && bash scripts/panel-docker.sh up)
+}
+
 start_services() {
   systemctl daemon-reload
   systemctl enable --now xray
-  systemctl enable --now "$SERVICE_NAME"
+  if [[ "$PANEL_RUNTIME" == "docker" ]]; then
+    ensure_docker_if_needed
+    start_panel_docker_runtime
+  else
+    systemctl enable --now "$SERVICE_NAME"
+  fi
   nginx -t
   systemctl reload nginx
+  wait_for_panel_health
 }
 
 print_summary() {
   local uri
   uri="vless://${REALITY_UUID}@${REALITY_SERVER_DOMAIN}:${REALITY_PORT}?encryption=none&security=reality&sni=${REALITY_SNI}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp&flow=xtls-rprx-vision#${REALITY_EMAIL}"
+  sleep 2
   local creds_file="$PANEL_DATA_DIR/admin_credentials.txt"
   echo
   echo "[OK] 安装完成"
   echo "- 面板地址: https://${DOMAIN}/login"
-  echo "- 面板服务: ${SERVICE_NAME}"
+  echo "- 面板运行方式: ${PANEL_RUNTIME}"
   echo "- 面板目录: ${INSTALL_DIR}"
   echo "- 面板数据目录: ${PANEL_DATA_DIR}"
   echo "- Reality 端口: ${REALITY_PORT}"
   echo "- 主链接邮箱: ${REALITY_EMAIL}"
-  echo "- 默认 Reality 链接: ${uri}"
+  echo "- Reality URI: ${uri}"
+  if [[ "$PANEL_RUNTIME" == "docker" ]]; then
+    echo "- 启动/更新: cd ${INSTALL_DIR} && bash scripts/panel-docker.sh up"
+    echo "- 查看状态: cd ${INSTALL_DIR} && bash scripts/panel-docker.sh status"
+    echo "- 查看日志: cd ${INSTALL_DIR} && bash scripts/panel-docker.sh logs"
+  else
+    echo "- 面板服务: ${SERVICE_NAME}"
+    echo "- 查看状态: systemctl status ${SERVICE_NAME}"
+    echo "- 查看日志: journalctl -u ${SERVICE_NAME} -f"
+  fi
   if [[ -f "$creds_file" ]]; then
     echo "- 初始账号文件: ${creds_file}"
     cat "$creds_file"
   else
     echo "- 初始账号文件尚未生成，请稍后查看: ${creds_file}"
   fi
-  echo
-  echo "[常用管理命令]"
-  echo "systemctl status ${SERVICE_NAME}"
-  echo "systemctl restart ${SERVICE_NAME}"
-  echo "journalctl -u ${SERVICE_NAME} -f"
-  echo "systemctl status xray"
-  echo "systemctl restart xray"
-  echo "journalctl -u xray -f"
-  echo "nginx -t && systemctl reload nginx"
 }
 
-prompt_install_inputs
 ensure_apt_packages
-check_domain_and_ports
+ensure_docker_if_needed
 install_xray_if_needed
 ensure_xray_user
 generate_uuid_if_needed
 generate_short_id_if_needed
 generate_keys_if_needed
-issue_certificate_if_needed
 write_xray_config
 open_reality_port
 install_panel_files
-write_panel_service
+if [[ "$PANEL_RUNTIME" == "systemd" ]]; then
+  install_panel_systemd_runtime
+fi
 write_nginx_config
 start_services
 print_summary

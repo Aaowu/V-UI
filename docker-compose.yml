@@ -1,0 +1,35 @@
+services:
+  vui-plan:
+    build:
+      context: ${PANEL_BUILD_CONTEXT:-.}
+    container_name: ${PANEL_CONTAINER_NAME:-vui-plan}
+    restart: ${PANEL_RESTART_POLICY:-unless-stopped}
+    init: true
+    network_mode: host
+    command:
+      - sh
+      - -c
+      - uvicorn app:app --host 0.0.0.0 --port ${PANEL_PORT:-9200}
+    environment:
+      PANEL_DATA_DIR: /var/lib/vui-plan
+      PANEL_RUNTIME_MODE: docker
+      PANEL_SESSION_COOKIE_SECURE: ${PANEL_SESSION_COOKIE_SECURE:-1}
+      PANEL_MANAGE_FIREWALL: ${PANEL_MANAGE_FIREWALL:-0}
+      PANEL_TIMEZONE: ${PANEL_TIMEZONE:-Asia/Shanghai}
+      PANEL_TIMEZONE_LABEL: ${PANEL_TIMEZONE_LABEL:-北京时间 (UTC+8)}
+      PANEL_DEFAULT_TITLE: ${PANEL_DEFAULT_TITLE:-V UI}
+      PANEL_DEFAULT_DOMAIN: ${PANEL_DEFAULT_DOMAIN:-panel.example.com}
+      PANEL_DEFAULT_FLOW: ${PANEL_DEFAULT_FLOW:-xtls-rprx-vision}
+      PANEL_SERVICE_NAME: ${PANEL_SERVICE_NAME:-vui-plan}
+      PANEL_SYSTEMCTL_COMMAND: ${PANEL_SYSTEMCTL_COMMAND:-}
+      XRAY_CONFIG_PATH: ${XRAY_CONTAINER_CONFIG_PATH:-/usr/local/etc/xray/config.json}
+      XRAY_ENV_PATH: ${XRAY_CONTAINER_ENV_PATH:-/root/xray-reality-main.env}
+      XRAY_BIN: ${XRAY_CONTAINER_BIN_PATH:-/usr/local/bin/xray}
+      XRAY_API_SERVER: ${XRAY_API_SERVER:-127.0.0.1:10085}
+      XRAY_LOG_DIR: ${XRAY_CONTAINER_LOG_DIR:-/var/log/xray}
+    volumes:
+      - ${PANEL_HOST_DATA_DIR:-./docker-data}:/var/lib/vui-plan
+      - ${PANEL_HOST_XRAY_CONFIG_DIR:-/usr/local/etc/xray}:${XRAY_CONTAINER_CONFIG_DIR:-/usr/local/etc/xray}
+      - ${PANEL_HOST_XRAY_BIN:-/usr/local/bin/xray}:${XRAY_CONTAINER_BIN_PATH:-/usr/local/bin/xray}:ro
+      - ${PANEL_HOST_XRAY_LOG_DIR:-/var/log/xray}:${XRAY_CONTAINER_LOG_DIR:-/var/log/xray}
+      - ${PANEL_HOST_XRAY_ENV_PATH:-/root/xray-reality-main.env}:${XRAY_CONTAINER_ENV_PATH:-/root/xray-reality-main.env}
