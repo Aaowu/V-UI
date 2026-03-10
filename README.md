@@ -172,8 +172,9 @@ curl http://127.0.0.1:9200/healthz
 ### Docker 模式的限制
 
 - 默认不会在容器内直接控制宿主机 `systemd`
+- 当前 compose 已额外挂载宿主机的 systemd unit 目录，所以设置页现在可以直接切换 `Xray / Nginx` 的开机自启
 - 所以涉及 `Xray` 配置变更的操作，会先写入配置，再提示你去宿主机手动执行 `systemctl restart xray`
-- 设置页里的服务控制按钮会根据当前运行模式自动降级
+- 设置页里的服务控制按钮会根据当前运行模式自动降级；在 Docker 模式下，`重启 Xray / Nginx` 仍然需要在宿主机处理
 - 如果你确实要让容器代管宿主机服务，可以额外设置 `PANEL_SYSTEMCTL_COMMAND`，但这取决于你的 Docker 权限、挂载方式和宿主机环境，默认 compose 没有启用这条路径
 
 如果你是直接用 `http://IP:9200` 访问容器，而不是走现有 HTTPS 反代，请把：

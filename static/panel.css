@@ -128,6 +128,7 @@ label span { color: var(--muted); font-size: 13px; }
   margin-bottom: 10px;
 }
 .status.active { color: var(--success); }
+.status.host, .status.docker, .status.external { color: var(--muted); }
 .status.failed, .status.inactive { color: var(--danger); }
 .main-wrap { min-width: 0; }
 .topbar {

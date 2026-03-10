@@ -35,6 +35,8 @@ services:
       PANEL_DEFAULT_FLOW: ${PANEL_DEFAULT_FLOW:-xtls-rprx-vision}
       PANEL_SERVICE_NAME: ${PANEL_SERVICE_NAME:-vui-plan}
       PANEL_SYSTEMCTL_COMMAND: ${PANEL_SYSTEMCTL_COMMAND:-}
+      PANEL_HOST_SYSTEMD_ETC_DIR: ${PANEL_HOST_SYSTEMD_ETC_DIR:-/host/etc/systemd/system}
+      PANEL_HOST_SYSTEMD_UNIT_DIRS: ${PANEL_HOST_SYSTEMD_UNIT_DIRS:-/host/etc/systemd/system:/host/usr/lib/systemd/system:/host/lib/systemd/system}
       XRAY_CONFIG_PATH: ${XRAY_CONTAINER_CONFIG_PATH:-/usr/local/etc/xray/config.json}
       XRAY_ENV_PATH: ${XRAY_CONTAINER_ENV_PATH:-/root/xray-reality-main.env}
       XRAY_BIN: ${XRAY_CONTAINER_BIN_PATH:-/usr/local/bin/xray}
@@ -46,3 +48,6 @@ services:
       - ${PANEL_HOST_XRAY_BIN:-/usr/local/bin/xray}:${XRAY_CONTAINER_BIN_PATH:-/usr/local/bin/xray}:ro
       - ${PANEL_HOST_XRAY_LOG_DIR:-/var/log/xray}:${XRAY_CONTAINER_LOG_DIR:-/var/log/xray}
       - ${PANEL_HOST_XRAY_ENV_PATH:-/root/xray-reality-main.env}:${XRAY_CONTAINER_ENV_PATH:-/root/xray-reality-main.env}
+      - ${PANEL_HOST_SYSTEMD_ETC_SOURCE:-/etc/systemd/system}:${PANEL_HOST_SYSTEMD_ETC_DIR:-/host/etc/systemd/system}
+      - ${PANEL_HOST_SYSTEMD_USR_UNIT_SOURCE:-/usr/lib/systemd/system}:/host/usr/lib/systemd/system:ro
+      - ${PANEL_HOST_SYSTEMD_LIB_UNIT_SOURCE:-/lib/systemd/system}:/host/lib/systemd/system:ro

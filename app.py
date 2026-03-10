@@ -84,6 +84,16 @@ if RUNTIME_MODE not in {"systemd", "docker"}:
 PANEL_SESSION_COOKIE_SECURE = env_flag("PANEL_SESSION_COOKIE_SECURE", True)
 PANEL_MANAGE_FIREWALL = env_flag("PANEL_MANAGE_FIREWALL", RUNTIME_MODE == "systemd")
 SYSTEMCTL_COMMAND = shlex.split(os.getenv("PANEL_SYSTEMCTL_COMMAND", "systemctl" if RUNTIME_MODE == "systemd" else ""))
+HOST_SYSTEMD_ETC_DIR = Path(os.getenv("PANEL_HOST_SYSTEMD_ETC_DIR", "/host/etc/systemd/system"))
+HOST_SYSTEMD_UNIT_DIRS = [
+    Path(item.strip())
+    for item in os.getenv(
+        "PANEL_HOST_SYSTEMD_UNIT_DIRS",
+        "/host/etc/systemd/system:/host/usr/lib/systemd/system:/host/lib/systemd/system",
+    ).split(":")
+    if item.strip()
+]
+HOST_SYSTEMD_MULTI_USER_WANTS_DIR = HOST_SYSTEMD_ETC_DIR / "multi-user.target.wants"
 
 app = FastAPI(title=DEFAULT_PANEL_TITLE)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -1467,14 +1477,66 @@ def service_restart_supported(name: str) -> bool:
     return can_manage_system_services()
 
 
+def service_unit_name(name: str) -> str:
+    return name if name.endswith(".service") else f"{name}.service"
+
+
+def resolve_host_service_unit(name: str) -> Path | None:
+    unit_name = service_unit_name(name)
+    for unit_dir in HOST_SYSTEMD_UNIT_DIRS:
+        candidate = unit_dir / unit_name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def can_manage_service_autostart(name: str) -> bool:
+    if name == PANEL_SERVICE_NAME:
+        return False
+    if can_manage_system_services():
+        return True
+    if RUNTIME_MODE != "docker":
+        return False
+    return HOST_SYSTEMD_ETC_DIR.exists() and resolve_host_service_unit(name) is not None
+
+
+def host_service_enabled(name: str) -> bool:
+    link_path = HOST_SYSTEMD_MULTI_USER_WANTS_DIR / service_unit_name(name)
+    return link_path.exists() or link_path.is_symlink()
+
+
+def set_host_service_enabled(name: str, enabled: bool) -> None:
+    unit_path = resolve_host_service_unit(name)
+    if unit_path is None:
+        raise RuntimeError(f"未找到 {name} 的 systemd unit 文件")
+
+    link_path = HOST_SYSTEMD_MULTI_USER_WANTS_DIR / service_unit_name(name)
+    if enabled:
+        HOST_SYSTEMD_MULTI_USER_WANTS_DIR.mkdir(parents=True, exist_ok=True)
+        if link_path.exists() or link_path.is_symlink():
+            if link_path.is_dir() and not link_path.is_symlink():
+                raise RuntimeError(f"{link_path} 不是可覆盖的链接")
+            link_path.unlink()
+        relative_target = os.path.relpath(unit_path, HOST_SYSTEMD_MULTI_USER_WANTS_DIR)
+        link_path.symlink_to(relative_target)
+        return
+
+    if link_path.exists() or link_path.is_symlink():
+        if link_path.is_dir() and not link_path.is_symlink():
+            raise RuntimeError(f"{link_path} 不是可移除的链接")
+        link_path.unlink()
+
+
 def service_toggle_supported(name: str) -> bool:
-    return name != PANEL_SERVICE_NAME and can_manage_system_services()
+    return can_manage_service_autostart(name)
 
 
 def service_status(name: str) -> str:
     if name == PANEL_SERVICE_NAME and RUNTIME_MODE == "docker":
         return "docker"
     if not can_manage_system_services():
+        if can_manage_service_autostart(name):
+            return "host"
         return "external"
     code, stdout, _ = run_systemctl("is-active", name)
     if code == 0:
@@ -1483,10 +1545,12 @@ def service_status(name: str) -> str:
 
 
 def service_enabled(name: str) -> bool:
-    if not can_manage_system_services():
-        return False
-    code, stdout, _ = run_systemctl("is-enabled", name)
-    return code == 0 and stdout.strip() == 'enabled'
+    if can_manage_system_services():
+        code, stdout, _ = run_systemctl("is-enabled", name)
+        return code == 0 and stdout.strip() == 'enabled'
+    if can_manage_service_autostart(name):
+        return host_service_enabled(name)
+    return False
 
 
 def get_admin_users() -> list[sqlite3.Row]:
@@ -1549,20 +1613,26 @@ def manage_service_action(name: str, action: str) -> None:
     if action == 'enable':
         if name == PANEL_SERVICE_NAME:
             raise RuntimeError('面板服务默认建议保持开机自启')
-        if not can_manage_system_services():
+        if can_manage_system_services():
+            code, stdout, stderr = run_systemctl("enable", name)
+            if code != 0:
+                raise RuntimeError(stderr or stdout or f'{name} 开启自启失败')
+            return
+        if not can_manage_service_autostart(name):
             raise RuntimeError(f'当前运行模式未配置 {name} 服务自启控制')
-        code, stdout, stderr = run_systemctl("enable", name)
-        if code != 0:
-            raise RuntimeError(stderr or stdout or f'{name} 开启自启失败')
+        set_host_service_enabled(name, True)
         return
     if action == 'disable':
         if name == PANEL_SERVICE_NAME:
             raise RuntimeError('为避免自锁，面板服务不提供关闭开机自启')
-        if not can_manage_system_services():
+        if can_manage_system_services():
+            code, stdout, stderr = run_systemctl("disable", name)
+            if code != 0:
+                raise RuntimeError(stderr or stdout or f'{name} 关闭自启失败')
+            return
+        if not can_manage_service_autostart(name):
             raise RuntimeError(f'当前运行模式未配置 {name} 服务自启控制')
-        code, stdout, stderr = run_systemctl("disable", name)
-        if code != 0:
-            raise RuntimeError(stderr or stdout or f'{name} 关闭自启失败')
+        set_host_service_enabled(name, False)
         return
     raise RuntimeError('不支持的操作')
 
@@ -1906,6 +1976,8 @@ def build_common_context(request: Request, user: dict[str, Any], active_nav: str
         "panel_service_name": PANEL_SERVICE_NAME,
         "runtime_mode": RUNTIME_MODE,
         "service_manager_available": can_manage_system_services(),
+        "host_service_restart_available": service_restart_supported("xray") or service_restart_supported("nginx"),
+        "host_service_toggle_available": service_toggle_supported("xray") or service_toggle_supported("nginx"),
         "service_status": {
             "xray": service_status("xray"),
             "panel": service_status(PANEL_SERVICE_NAME),
