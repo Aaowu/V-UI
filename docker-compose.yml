@@ -6,15 +6,28 @@ services:
     restart: ${PANEL_RESTART_POLICY:-unless-stopped}
     init: true
     network_mode: host
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     command:
       - sh
       - -c
-      - uvicorn app:app --host 0.0.0.0 --port ${PANEL_PORT:-9200}
+      - uvicorn app:app --host ${PANEL_BIND_HOST:-127.0.0.1} --port ${PANEL_PORT:-9200}
     environment:
       PANEL_DATA_DIR: /var/lib/vui-plan
       PANEL_RUNTIME_MODE: docker
       PANEL_SESSION_COOKIE_SECURE: ${PANEL_SESSION_COOKIE_SECURE:-1}
       PANEL_MANAGE_FIREWALL: ${PANEL_MANAGE_FIREWALL:-0}
+      PANEL_TRUSTED_PROXY_IPS: ${PANEL_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
+      PANEL_LOGIN_RATE_LIMIT_MAX_ATTEMPTS: ${PANEL_LOGIN_RATE_LIMIT_MAX_ATTEMPTS:-5}
+      PANEL_LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${PANEL_LOGIN_RATE_LIMIT_WINDOW_SECONDS:-300}
+      PANEL_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS: ${PANEL_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS:-900}
+      PANEL_BOOTSTRAP_OWNER_USERNAME: ${PANEL_BOOTSTRAP_OWNER_USERNAME:-}
+      PANEL_BOOTSTRAP_OWNER_PASSWORD: ${PANEL_BOOTSTRAP_OWNER_PASSWORD:-}
       PANEL_TIMEZONE: ${PANEL_TIMEZONE:-Asia/Shanghai}
       PANEL_TIMEZONE_LABEL: ${PANEL_TIMEZONE_LABEL:-北京时间 (UTC+8)}
       PANEL_DEFAULT_TITLE: ${PANEL_DEFAULT_TITLE:-V UI}

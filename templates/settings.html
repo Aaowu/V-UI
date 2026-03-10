@@ -8,6 +8,7 @@
   <article class="card">
     <div class="section-head"><div><h2>全局参数</h2><p>这里管理的是主节点的核心参数：域名、SNI、端口、Short ID 和 Reality Target。</p></div></div>
     <form class="form-stack" method="post" action="/settings/general">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-grid cols-2">
         <label><span>面板标题</span><input type="text" name="panel_title" value="{{ settings.panel_title }}" required></label>
         <label><span>接入域名</span><input type="text" name="server_domain" value="{{ settings.server_domain }}" required></label>
@@ -28,6 +29,7 @@
   <article class="card">
     <div class="section-head"><div><h2>账号与密码</h2><p>支持修改当前用户名、修改当前密码，以及新增朋友账号。</p></div></div>
     <form class="form-stack" method="post" action="/settings/username">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-grid cols-2">
         <label><span>当前用户名</span><input type="text" value="{{ user.username }}" readonly></label>
         <label><span>新用户名</span><input type="text" name="new_username" placeholder="admin2" required></label>
@@ -37,12 +39,14 @@
     </form>
 
     <form class="form-stack mt-24" method="post" action="/settings/password">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label><span>当前密码</span><input type="password" name="current_password" required></label>
       <label><span>新密码</span><input type="password" name="new_password" minlength="8" required></label>
       <div class="form-actions"><button class="btn btn-primary" type="submit">修改当前密码</button></div>
     </form>
 
     <form class="form-stack mt-24" method="post" action="/settings/users/create">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="section-head compact-head"><div><h2>新增朋友账号</h2><p>只有主管理员可以创建。新用户登录后只能查看自己的使用情况和订阅。</p></div></div>
       <div class="form-grid cols-2">
         <label><span>用户名</span><input type="text" name="username" placeholder="friend01" required></label>
@@ -76,6 +80,7 @@
   <article class="card">
     <div class="section-head"><div><h2>日志与存储</h2><p>控制活动明细和访问日志的保留量，避免磁盘被日志撑爆。</p></div></div>
     <form class="form-stack" method="post" action="/settings/storage">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-grid cols-2">
         <label><span>流量活动最大保留条数</span><input type="number" min="100" name="max_traffic_rows" value="{{ settings.max_traffic_rows }}" required></label>
         <label><span>访问明细最大保留条数</span><input type="number" min="100" name="max_access_rows" value="{{ settings.max_access_rows }}" required></label>
@@ -91,9 +96,9 @@
   <article class="card">
     <div class="section-head"><div><h2>服务控制</h2><p>{% if service_manager_available %}支持重启服务，以及切换 `Xray / Nginx` 的开机自启。{% elif runtime_mode == 'docker' %}当前运行在 Docker 模式，未接入宿主机服务控制；Xray / Nginx 需要在宿主机手动处理。{% else %}当前环境未配置服务管理命令，下面只展示状态信息。{% endif %}</p></div></div>
     <div class="service-grid">
-      <div class="service-card"><div><strong>Xray</strong><p>状态 {{ service_status.xray }} · 开机自启 {{ '已开启' if service_enabled.xray else '已关闭' }}</p></div><div class="form-actions">{% if service_actions.xray.restart %}<form method="post" action="/settings/service/xray/restart"><button class="btn btn-light" type="submit">重启</button></form>{% else %}<button class="btn btn-light" type="button" disabled>宿主机处理</button>{% endif %}{% if service_actions.xray.toggle %}<form method="post" action="/settings/service/xray/{{ 'disable' if service_enabled.xray else 'enable' }}"><button class="btn btn-light" type="submit">{{ '关闭自启' if service_enabled.xray else '开启自启' }}</button></form>{% endif %}</div></div>
-      <div class="service-card"><div><strong>Nginx</strong><p>状态 {{ service_status.nginx }} · 开机自启 {{ '已开启' if service_enabled.nginx else '已关闭' }}</p></div><div class="form-actions">{% if service_actions.nginx.restart %}<form method="post" action="/settings/service/nginx/restart"><button class="btn btn-light" type="submit">重启</button></form>{% else %}<button class="btn btn-light" type="button" disabled>宿主机处理</button>{% endif %}{% if service_actions.nginx.toggle %}<form method="post" action="/settings/service/nginx/{{ 'disable' if service_enabled.nginx else 'enable' }}"><button class="btn btn-light" type="submit">{{ '关闭自启' if service_enabled.nginx else '开启自启' }}</button></form>{% endif %}</div></div>
-      <div class="service-card"><div><strong>{{ panel_service_name }}</strong><p>状态 {{ service_status.panel }} · {% if runtime_mode == 'docker' %}Docker 模式下会退出当前容器并交给重启策略拉起{% else %}默认建议保持自启{% endif %}</p></div><div class="form-actions">{% if service_actions.panel.restart %}<form method="post" action="/settings/service/{{ panel_service_name }}/restart"><button class="btn btn-light" type="submit">重启 {{ panel_service_name }}</button></form>{% else %}<button class="btn btn-light" type="button" disabled>不可用</button>{% endif %}</div></div>
+      <div class="service-card"><div><strong>Xray</strong><p>状态 {{ service_status.xray }} · 开机自启 {{ '已开启' if service_enabled.xray else '已关闭' }}</p></div><div class="form-actions">{% if service_actions.xray.restart %}<form method="post" action="/settings/service/xray/restart"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-light" type="submit">重启</button></form>{% else %}<button class="btn btn-light" type="button" disabled>宿主机处理</button>{% endif %}{% if service_actions.xray.toggle %}<form method="post" action="/settings/service/xray/{{ 'disable' if service_enabled.xray else 'enable' }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-light" type="submit">{{ '关闭自启' if service_enabled.xray else '开启自启' }}</button></form>{% endif %}</div></div>
+      <div class="service-card"><div><strong>Nginx</strong><p>状态 {{ service_status.nginx }} · 开机自启 {{ '已开启' if service_enabled.nginx else '已关闭' }}</p></div><div class="form-actions">{% if service_actions.nginx.restart %}<form method="post" action="/settings/service/nginx/restart"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-light" type="submit">重启</button></form>{% else %}<button class="btn btn-light" type="button" disabled>宿主机处理</button>{% endif %}{% if service_actions.nginx.toggle %}<form method="post" action="/settings/service/nginx/{{ 'disable' if service_enabled.nginx else 'enable' }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-light" type="submit">{{ '关闭自启' if service_enabled.nginx else '开启自启' }}</button></form>{% endif %}</div></div>
+      <div class="service-card"><div><strong>{{ panel_service_name }}</strong><p>状态 {{ service_status.panel }} · {% if runtime_mode == 'docker' %}Docker 模式下会退出当前容器并交给重启策略拉起{% else %}默认建议保持自启{% endif %}</p></div><div class="form-actions">{% if service_actions.panel.restart %}<form method="post" action="/settings/service/{{ panel_service_name }}/restart"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-light" type="submit">重启 {{ panel_service_name }}</button></form>{% else %}<button class="btn btn-light" type="button" disabled>不可用</button>{% endif %}</div></div>
     </div>
   </article>
 
@@ -106,7 +111,7 @@
           {% for item in admin_users %}
           <tr>
             <td data-label="ID">{{ item.id }}</td><td data-label="用户名">{{ item.username }}</td><td data-label="角色">{{ item.role }}</td><td data-label="创建时间">{{ item.created_at|bjt }}</td><td data-label="最近登录">{{ item.last_login_at|bjt if item.last_login_at else '暂无' }}</td>
-            <td>{% if item.id != user.id %}<form method="post" action="/settings/users/{{ item.id }}/delete" onsubmit="return confirm('确认删除这个用户吗？');"><button class="btn btn-danger" type="submit">删除</button></form>{% else %}当前用户{% endif %}</td>
+            <td>{% if item.id != user.id %}<form method="post" action="/settings/users/{{ item.id }}/delete" onsubmit="return confirm('确认删除这个用户吗？');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-danger" type="submit">删除</button></form>{% else %}当前用户{% endif %}</td>
           </tr>
           {% else %}<tr><td colspan="6">暂无用户</td></tr>{% endfor %}
         </tbody>
@@ -119,6 +124,7 @@
   <article class="card">
     <div class="section-head"><div><h2>账户资料</h2><p>你可以在这里修改自己的用户名和密码。</p></div></div>
     <form class="form-stack" method="post" action="/settings/username">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-grid cols-2">
         <label><span>当前用户名</span><input type="text" value="{{ user.username }}" readonly></label>
         <label><span>新用户名</span><input type="text" name="new_username" placeholder="friend01-new" required></label>
@@ -127,6 +133,7 @@
       <div class="form-actions"><button class="btn btn-primary" type="submit">修改用户名</button></div>
     </form>
     <form class="form-stack mt-24" method="post" action="/settings/password">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label><span>当前密码</span><input type="password" name="current_password" required></label>
       <label><span>新密码</span><input type="password" name="new_password" minlength="8" required></label>
       <div class="form-actions"><button class="btn btn-primary" type="submit">修改密码</button></div>

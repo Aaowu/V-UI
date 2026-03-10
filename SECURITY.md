@@ -17,3 +17,8 @@
 
 本项目不会尝试解密 `HTTPS / REALITY` 流量内容。
 活动明细仅展示连接层可被动观测到的目标域名 / IP、时间、来源 IP 和路由信息。
+
+当前默认安全措施包括：
+- 登录 Cookie 使用 `HttpOnly` + `SameSite=Lax`
+- 后台敏感 `POST` 操作启用 CSRF 校验
+- 登录失败同时受应用内限速和 `fail2ban` 封禁保护

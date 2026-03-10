@@ -22,12 +22,19 @@ SERVICE_NAME=${SERVICE_NAME:-vui-plan}
 PANEL_CONTAINER_NAME=${PANEL_CONTAINER_NAME:-$SERVICE_NAME}
 PANEL_RUNTIME=${PANEL_RUNTIME:-docker}
 PANEL_PORT=${PANEL_PORT:-9200}
+PANEL_BIND_HOST=${PANEL_BIND_HOST:-127.0.0.1}
 PANEL_USER=${PANEL_USER:-root}
 PANEL_DATA_DIR=${PANEL_DATA_DIR:-/var/lib/vui-plan}
 PANEL_TIMEZONE=${PANEL_TIMEZONE:-Asia/Shanghai}
 PANEL_TIMEZONE_LABEL=${PANEL_TIMEZONE_LABEL:-北京时间\ \(UTC+8\)}
 PANEL_DEFAULT_TITLE=${PANEL_DEFAULT_TITLE:-V UI}
 PANEL_SESSION_COOKIE_SECURE=${PANEL_SESSION_COOKIE_SECURE:-1}
+PANEL_TRUSTED_PROXY_IPS=${PANEL_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
+PANEL_LOGIN_RATE_LIMIT_MAX_ATTEMPTS=${PANEL_LOGIN_RATE_LIMIT_MAX_ATTEMPTS:-5}
+PANEL_LOGIN_RATE_LIMIT_WINDOW_SECONDS=${PANEL_LOGIN_RATE_LIMIT_WINDOW_SECONDS:-300}
+PANEL_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS=${PANEL_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS:-900}
+PANEL_BOOTSTRAP_OWNER_USERNAME=${PANEL_BOOTSTRAP_OWNER_USERNAME:-admin}
+PANEL_BOOTSTRAP_OWNER_PASSWORD=${PANEL_BOOTSTRAP_OWNER_PASSWORD:-}
 XRAY_CONFIG_PATH=${XRAY_CONFIG_PATH:-/usr/local/etc/xray/config.json}
 XRAY_ENV_PATH=${XRAY_ENV_PATH:-/root/xray-reality-main.env}
 XRAY_BIN=${XRAY_BIN:-/usr/local/bin/xray}
@@ -43,6 +50,7 @@ REALITY_SHORT_ID=${REALITY_SHORT_ID:-}
 REALITY_PRIVATE_KEY=${REALITY_PRIVATE_KEY:-}
 REALITY_PUBLIC_KEY=${REALITY_PUBLIC_KEY:-}
 INSTALL_XRAY_IF_MISSING=${INSTALL_XRAY_IF_MISSING:-1}
+BOOTSTRAP_OWNER_CREATED=0
 
 if [[ "$PANEL_RUNTIME" != "docker" && "$PANEL_RUNTIME" != "systemd" ]]; then
   echo "[ERROR] PANEL_RUNTIME 仅支持 docker 或 systemd"
@@ -76,8 +84,8 @@ backup_if_exists() {
 ensure_apt_packages() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y curl unzip ca-certificates nginx python3 python3-venv python3-pip jq tar iptables-persistent netfilter-persistent || \
-    apt-get install -y curl unzip ca-certificates nginx python3 python3-venv python3-pip jq tar
+  apt-get install -y curl unzip ca-certificates nginx python3 python3-venv python3-pip jq tar fail2ban iptables-persistent netfilter-persistent || \
+    apt-get install -y curl unzip ca-certificates nginx python3 python3-venv python3-pip jq tar fail2ban
   if [[ "$PANEL_RUNTIME" == "docker" ]]; then
     apt-get install -y docker.io docker-compose-plugin || apt-get install -y docker.io
   fi
@@ -251,6 +259,40 @@ open_reality_port() {
   systemctl enable netfilter-persistent >/dev/null 2>&1 || true
 }
 
+panel_has_admin_users() {
+  local db_path="$PANEL_DATA_DIR/panel.db"
+  if [[ ! -f "$db_path" ]]; then
+    return 1
+  fi
+  python3 - "$db_path" <<'PY'
+import sqlite3
+import sys
+
+path = sys.argv[1]
+conn = sqlite3.connect(path)
+try:
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='admin_users'").fetchone()
+    if not row:
+        raise SystemExit(1)
+    count = conn.execute("SELECT COUNT(*) FROM admin_users").fetchone()[0]
+    raise SystemExit(0 if count > 0 else 1)
+finally:
+    conn.close()
+PY
+}
+
+
+generate_bootstrap_owner_password_if_needed() {
+  if [[ -n "$PANEL_BOOTSTRAP_OWNER_PASSWORD" ]]; then
+    return 0
+  fi
+  PANEL_BOOTSTRAP_OWNER_PASSWORD=$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(18)[:20])
+PY
+)
+}
+
 write_panel_runtime_env() {
   local xray_config_dir xray_config_base
   xray_config_dir=$(dirname "$XRAY_CONFIG_PATH")
@@ -261,9 +303,14 @@ PANEL_BUILD_CONTEXT=.
 PANEL_CONTAINER_NAME=$PANEL_CONTAINER_NAME
 PANEL_RESTART_POLICY=unless-stopped
 PANEL_PORT=$PANEL_PORT
+PANEL_BIND_HOST=$PANEL_BIND_HOST
 PANEL_HOST_DATA_DIR=$PANEL_DATA_DIR
 PANEL_SESSION_COOKIE_SECURE=$PANEL_SESSION_COOKIE_SECURE
 PANEL_MANAGE_FIREWALL=0
+PANEL_TRUSTED_PROXY_IPS="$PANEL_TRUSTED_PROXY_IPS"
+PANEL_LOGIN_RATE_LIMIT_MAX_ATTEMPTS=$PANEL_LOGIN_RATE_LIMIT_MAX_ATTEMPTS
+PANEL_LOGIN_RATE_LIMIT_WINDOW_SECONDS=$PANEL_LOGIN_RATE_LIMIT_WINDOW_SECONDS
+PANEL_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS=$PANEL_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS
 PANEL_TIMEZONE=$PANEL_TIMEZONE
 PANEL_TIMEZONE_LABEL="$PANEL_TIMEZONE_LABEL"
 PANEL_DEFAULT_TITLE="$PANEL_DEFAULT_TITLE"
@@ -297,6 +344,10 @@ PANEL_RUNTIME_MODE=systemd
 PANEL_SESSION_COOKIE_SECURE=$PANEL_SESSION_COOKIE_SECURE
 PANEL_MANAGE_FIREWALL=1
 PANEL_SYSTEMCTL_COMMAND=systemctl
+PANEL_TRUSTED_PROXY_IPS="$PANEL_TRUSTED_PROXY_IPS"
+PANEL_LOGIN_RATE_LIMIT_MAX_ATTEMPTS=$PANEL_LOGIN_RATE_LIMIT_MAX_ATTEMPTS
+PANEL_LOGIN_RATE_LIMIT_WINDOW_SECONDS=$PANEL_LOGIN_RATE_LIMIT_WINDOW_SECONDS
+PANEL_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS=$PANEL_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS
 XRAY_CONFIG_PATH=$XRAY_CONFIG_PATH
 XRAY_ENV_PATH=$XRAY_ENV_PATH
 XRAY_BIN=$XRAY_BIN
@@ -329,6 +380,21 @@ install_panel_systemd_runtime() {
   "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip >/dev/null
   "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
   write_panel_service
+}
+
+
+bootstrap_owner_if_needed() {
+  if panel_has_admin_users; then
+    return 0
+  fi
+  generate_bootstrap_owner_password_if_needed
+  (
+    cd "$INSTALL_DIR"
+    PANEL_BOOTSTRAP_OWNER_USERNAME="$PANEL_BOOTSTRAP_OWNER_USERNAME" \
+    PANEL_BOOTSTRAP_OWNER_PASSWORD="$PANEL_BOOTSTRAP_OWNER_PASSWORD" \
+    bash scripts/bootstrap-owner.sh
+  )
+  BOOTSTRAP_OWNER_CREATED=1
 }
 
 write_panel_service() {
@@ -388,6 +454,21 @@ server {
     add_header X-Frame-Options SAMEORIGIN always;
     add_header X-Content-Type-Options nosniff always;
     add_header Referrer-Policy no-referrer-when-downgrade always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location = /login {
+        limit_req zone=vui_login burst=5 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://127.0.0.1:$PANEL_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:$PANEL_PORT;
@@ -406,11 +487,31 @@ NGINX
 from pathlib import Path
 path = Path('/etc/nginx/nginx.conf')
 text = path.read_text()
-insert = '    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        "" close;\n    }\n\n'
-if insert not in text:
-    text = text.replace('http {', 'http {\n' + insert, 1)
+snippets = [
+    '    map $http_upgrade $connection_upgrade {\n        default upgrade;\n        "" close;\n    }\n\n',
+    '    map $request_method $vui_login_limit_key {\n        default "";\n        POST $binary_remote_addr;\n    }\n\n',
+    '    limit_req_zone $vui_login_limit_key zone=vui_login:10m rate=5r/m;\n\n',
+]
+for snippet in reversed(snippets):
+    if snippet not in text:
+        text = text.replace('http {\n', 'http {\n' + snippet, 1)
 path.write_text(text)
 PY
+}
+
+write_fail2ban_jail() {
+  mkdir -p /etc/fail2ban/jail.d
+  cat > /etc/fail2ban/jail.d/vui-plan-login.local <<'JAIL'
+[vui-plan-login]
+enabled = true
+filter = nginx-limit-req
+logpath = /var/log/nginx/error.log
+maxretry = 2
+ngx_limit_req_zones = vui_login
+port = http,https
+findtime = 10m
+bantime = 1h
+JAIL
 }
 
 wait_for_panel_health() {
@@ -433,6 +534,7 @@ start_panel_docker_runtime() {
 start_services() {
   systemctl daemon-reload
   systemctl enable --now xray
+  systemctl enable --now fail2ban
   if [[ "$PANEL_RUNTIME" == "docker" ]]; then
     ensure_docker_if_needed
     start_panel_docker_runtime
@@ -441,6 +543,7 @@ start_services() {
   fi
   nginx -t
   systemctl reload nginx
+  fail2ban-client reload >/dev/null 2>&1 || systemctl restart fail2ban
   wait_for_panel_health
 }
 
@@ -448,7 +551,6 @@ print_summary() {
   local uri
   uri="vless://${REALITY_UUID}@${REALITY_SERVER_DOMAIN}:${REALITY_PORT}?encryption=none&security=reality&sni=${REALITY_SNI}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp&flow=xtls-rprx-vision#${REALITY_EMAIL}"
   sleep 2
-  local creds_file="$PANEL_DATA_DIR/admin_credentials.txt"
   echo
   echo "[OK] 安装完成"
   echo "- 面板地址: https://${DOMAIN}/login"
@@ -467,11 +569,10 @@ print_summary() {
     echo "- 查看状态: systemctl status ${SERVICE_NAME}"
     echo "- 查看日志: journalctl -u ${SERVICE_NAME} -f"
   fi
-  if [[ -f "$creds_file" ]]; then
-    echo "- 初始账号文件: ${creds_file}"
-    cat "$creds_file"
-  else
-    echo "- 初始账号文件尚未生成，请稍后查看: ${creds_file}"
+  if [[ "$BOOTSTRAP_OWNER_CREATED" == "1" ]]; then
+    echo "- 初始管理员用户名: ${PANEL_BOOTSTRAP_OWNER_USERNAME}"
+    echo "- 初始管理员密码: ${PANEL_BOOTSTRAP_OWNER_PASSWORD}"
+    echo "- 请首次登录后立即修改密码"
   fi
 }
 
@@ -488,6 +589,8 @@ install_panel_files
 if [[ "$PANEL_RUNTIME" == "systemd" ]]; then
   install_panel_systemd_runtime
 fi
+bootstrap_owner_if_needed
 write_nginx_config
+write_fail2ban_jail
 start_services
 print_summary

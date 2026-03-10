@@ -55,6 +55,7 @@
       {% endif %}
 
       <form class="form-stack" method="post" action="/login">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>
           <span>用户名</span>
           <input type="text" name="username" placeholder="admin" autocomplete="username" required>

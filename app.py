@@ -17,7 +17,7 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
@@ -31,6 +31,16 @@ def env_flag(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -49,6 +59,7 @@ XRAY_ERROR_LOG = XRAY_LOG_DIR / "error.log"
 POLL_INTERVAL_SECONDS = 60
 SESSION_COOKIE_NAME = "vui_session"
 LEGACY_SESSION_COOKIE_NAMES = ("icu_panel_session",)
+LOGIN_CSRF_COOKIE_NAME = "vui_login_csrf"
 SESSION_TTL_DAYS = 14
 INBOUND_TAG = "vless-reality"
 REALITY_FIREWALL_COMMENT = "vui-xray-reality"
@@ -61,6 +72,12 @@ SAMPLE_RETENTION_DAYS = 30
 DISPLAY_TZ = ZoneInfo(os.getenv("PANEL_TIMEZONE", "Asia/Shanghai"))
 DISPLAY_TZ_LABEL = os.getenv("PANEL_TIMEZONE_LABEL", "北京时间 (UTC+8)")
 PANEL_SERVICE_NAME = os.getenv("PANEL_SERVICE_NAME", "vui-plan")
+BOOTSTRAP_OWNER_USERNAME = (os.getenv("PANEL_BOOTSTRAP_OWNER_USERNAME", "admin") or "admin").strip() or "admin"
+BOOTSTRAP_OWNER_PASSWORD = os.getenv("PANEL_BOOTSTRAP_OWNER_PASSWORD", "")
+TRUSTED_PROXY_IPS = {item.strip() for item in os.getenv("PANEL_TRUSTED_PROXY_IPS", "127.0.0.1,::1").split(",") if item.strip()}
+LOGIN_RATE_LIMIT_MAX_ATTEMPTS = max(1, env_int("PANEL_LOGIN_RATE_LIMIT_MAX_ATTEMPTS", 5))
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = max(60, env_int("PANEL_LOGIN_RATE_LIMIT_WINDOW_SECONDS", 300))
+LOGIN_RATE_LIMIT_LOCKOUT_SECONDS = max(60, env_int("PANEL_LOGIN_RATE_LIMIT_LOCKOUT_SECONDS", 900))
 RUNTIME_MODE = (os.getenv("PANEL_RUNTIME_MODE", "systemd") or "systemd").strip().lower()
 if RUNTIME_MODE not in {"systemd", "docker"}:
     RUNTIME_MODE = "systemd"
@@ -81,6 +98,8 @@ runtime_state: dict[str, Any] = {
     "last_access_parse_at": None,
     "last_access_parse_error": None,
 }
+login_rate_limit_lock = threading.Lock()
+login_rate_limit_state: dict[str, dict[str, float | int]] = {}
 
 ACCESS_LINE_TIME = re.compile(r"^(?P<ts>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(?P<body>.*)$")
 ACCESS_ROUTE = re.compile(r"\[(?P<inbound>.+?)\s*(?:>>|->)\s*(?P<outbound>.+?)\]")
@@ -132,6 +151,33 @@ def ensure_dirs() -> None:
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
     TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
     XRAY_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(DATA_DIR, 0o700)
+    except OSError:
+        pass
+
+
+def set_path_mode(path: Path, mode: int) -> None:
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def harden_data_permissions() -> None:
+    ensure_dirs()
+    set_path_mode(DATA_DIR, 0o700)
+    if DB_PATH.exists():
+        set_path_mode(DB_PATH, 0o600)
+    if OWNER_CREDENTIALS_PATH.exists():
+        set_path_mode(OWNER_CREDENTIALS_PATH, 0o600)
+
+
+def remove_owner_credentials_file() -> None:
+    try:
+        OWNER_CREDENTIALS_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def db() -> sqlite3.Connection:
@@ -231,6 +277,13 @@ def init_db() -> None:
         )
         ensure_columns(
             conn,
+            "sessions",
+            {
+                "csrf_token": "TEXT",
+            },
+        )
+        ensure_columns(
+            conn,
             "admin_users",
             {
                 "role": "TEXT NOT NULL DEFAULT 'owner'",
@@ -265,6 +318,7 @@ def init_db() -> None:
             for row in rows:
                 conn.execute("UPDATE links SET owner_user_id = ? WHERE id = ?", (row['id'], row['link_id']))
         conn.commit()
+    harden_data_permissions()
 
 
 def hash_password(password: str, salt_hex: str) -> str:
@@ -421,15 +475,9 @@ def ensure_default_settings_from_xray() -> None:
 
 
 def sync_owner_credentials_file(username: str, password: str) -> None:
-    ensure_dirs()
-    OWNER_CREDENTIALS_PATH.write_text(
-        f"username={username}\npassword={password}\n",
-        encoding="utf-8",
-    )
-    try:
-        os.chmod(OWNER_CREDENTIALS_PATH, 0o600)
-    except OSError:
-        pass
+    del username, password
+    remove_owner_credentials_file()
+    harden_data_permissions()
 
 
 def get_session_token(request: Request) -> str | None:
@@ -440,12 +488,24 @@ def get_session_token(request: Request) -> str | None:
     return None
 
 
+def get_login_csrf_token(request: Request) -> str:
+    token = (request.cookies.get(LOGIN_CSRF_COOKIE_NAME) or "").strip()
+    if token:
+        return token
+    return secrets.token_urlsafe(24)
+
+
 def get_client_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for", "")
-    if forwarded_for:
-        client_ip = forwarded_for.split(",", 1)[0].strip()
-        if client_ip:
-            return client_ip
+    peer_ip = request.client.host if request.client and request.client.host else "-"
+    if peer_ip in TRUSTED_PROXY_IPS:
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",", 1)[0].strip()
+            if client_ip:
+                return client_ip
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            return real_ip
     if request.client and request.client.host:
         return request.client.host
     return "-"
@@ -462,13 +522,92 @@ def set_session_cookie(response: RedirectResponse, token: str) -> None:
         max_age=int(timedelta(days=SESSION_TTL_DAYS).total_seconds()),
     )
 
+
+def set_login_csrf_cookie(response: HTMLResponse | RedirectResponse, token: str) -> None:
+    response.set_cookie(
+        LOGIN_CSRF_COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=PANEL_SESSION_COOKIE_SECURE,
+        path="/login",
+        max_age=3600,
+    )
+
+
+def ensure_session_csrf_token(session_token: str, current_token: str | None = None) -> str:
+    if current_token:
+        return current_token
+    csrf_token = secrets.token_urlsafe(24)
+    with closing(db()) as conn:
+        conn.execute("UPDATE sessions SET csrf_token = ? WHERE token = ?", (csrf_token, session_token))
+        conn.commit()
+    return csrf_token
+
+
+def get_session_csrf_token(session_token: str) -> str | None:
+    with closing(db()) as conn:
+        row = conn.execute("SELECT csrf_token FROM sessions WHERE token = ?", (session_token,)).fetchone()
+    if row is None:
+        return None
+    return ensure_session_csrf_token(session_token, row["csrf_token"])
+
+
+def prune_login_rate_limit_state(now_ts: float) -> None:
+    stale_after = now_ts - max(LOGIN_RATE_LIMIT_WINDOW_SECONDS, LOGIN_RATE_LIMIT_LOCKOUT_SECONDS) * 2
+    expired = [key for key, value in login_rate_limit_state.items() if float(value.get("updated_at", 0.0)) < stale_after]
+    for key in expired:
+        login_rate_limit_state.pop(key, None)
+
+
+def get_login_lockout_remaining(client_ip: str) -> int:
+    now_ts = time.time()
+    with login_rate_limit_lock:
+        prune_login_rate_limit_state(now_ts)
+        state = login_rate_limit_state.get(client_ip)
+        if not state:
+            return 0
+        blocked_until = float(state.get("blocked_until", 0.0))
+        if blocked_until <= now_ts:
+            return 0
+        return max(1, int(blocked_until - now_ts))
+
+
+def register_login_failure(client_ip: str) -> None:
+    now_ts = time.time()
+    with login_rate_limit_lock:
+        prune_login_rate_limit_state(now_ts)
+        state = login_rate_limit_state.get(client_ip)
+        if not state or now_ts - float(state.get("window_started_at", 0.0)) > LOGIN_RATE_LIMIT_WINDOW_SECONDS:
+            state = {"window_started_at": now_ts, "failures": 0, "blocked_until": 0.0, "updated_at": now_ts}
+        failures = int(state.get("failures", 0)) + 1
+        state["failures"] = failures
+        state["updated_at"] = now_ts
+        if failures >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS:
+            state["blocked_until"] = now_ts + LOGIN_RATE_LIMIT_LOCKOUT_SECONDS
+            state["window_started_at"] = now_ts
+            state["failures"] = 0
+        login_rate_limit_state[client_ip] = state
+
+
+def clear_login_failures(client_ip: str) -> None:
+    with login_rate_limit_lock:
+        login_rate_limit_state.pop(client_ip, None)
+
+
 def ensure_admin_user() -> None:
     with closing(db()) as conn:
         row = conn.execute("SELECT COUNT(*) AS count FROM admin_users").fetchone()
         if row["count"]:
+            remove_owner_credentials_file()
+            harden_data_permissions()
             return
-        username = "admin"
-        password = random_password()
+        username = BOOTSTRAP_OWNER_USERNAME
+        password = BOOTSTRAP_OWNER_PASSWORD.strip()
+        if len(username) < 3:
+            raise RuntimeError("PANEL_BOOTSTRAP_OWNER_USERNAME 至少 3 位")
+        if len(password) < 12:
+            raise RuntimeError("首次启动必须通过 PANEL_BOOTSTRAP_OWNER_PASSWORD 提供至少 12 位管理员密码")
         salt = secrets.token_hex(16)
         password_hash = hash_password(password, salt)
         conn.execute(
@@ -1212,17 +1351,18 @@ def cleanup_expired_sessions() -> None:
 
 def create_session(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
+    csrf_token = secrets.token_urlsafe(24)
     expires_at = (now_utc() + timedelta(days=SESSION_TTL_DAYS)).isoformat()
     with closing(db()) as conn:
         conn.execute(
-            "INSERT INTO sessions(token, user_id, created_at, expires_at) VALUES(?, ?, ?, ?)",
-            (token, user_id, now_iso(), expires_at),
+            "INSERT INTO sessions(token, user_id, created_at, expires_at, csrf_token) VALUES(?, ?, ?, ?, ?)",
+            (token, user_id, now_iso(), expires_at, csrf_token),
         )
         conn.commit()
     return token
 
 
-def get_current_user(request: Request) -> sqlite3.Row:
+def get_current_user(request: Request) -> dict[str, Any]:
     cleanup_expired_sessions()
     token = get_session_token(request)
     if not token:
@@ -1231,7 +1371,9 @@ def get_current_user(request: Request) -> sqlite3.Row:
         row = conn.execute(
             """
             SELECT
-                sessions.*,
+                sessions.token AS session_token,
+                sessions.expires_at,
+                sessions.csrf_token,
                 admin_users.id AS id,
                 admin_users.username,
                 admin_users.role,
@@ -1250,23 +1392,25 @@ def get_current_user(request: Request) -> sqlite3.Row:
         ).fetchone()
     if row is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    expires_at = parse_iso(row["expires_at"])
+    user = dict(row)
+    expires_at = parse_iso(user["expires_at"])
     if expires_at and expires_at < now_utc():
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    return row
+    user["csrf_token"] = ensure_session_csrf_token(token, user.get("csrf_token"))
+    return user
 
-def optional_current_user(request: Request) -> sqlite3.Row | None:
+def optional_current_user(request: Request) -> dict[str, Any] | None:
     try:
         return get_current_user(request)
     except HTTPException:
         return None
 
 
-def is_owner(user: sqlite3.Row) -> bool:
+def is_owner(user: dict[str, Any]) -> bool:
     return (user["role"] or "owner") == "owner"
 
 
-def ensure_owner_or_redirect(user: sqlite3.Row) -> RedirectResponse | None:
+def ensure_owner_or_redirect(user: dict[str, Any]) -> RedirectResponse | None:
     if is_owner(user):
         return None
     return redirect_with_message("/dashboard", "当前账号仅可查看自己的使用情况", "info")
@@ -1274,7 +1418,47 @@ def ensure_owner_or_redirect(user: sqlite3.Row) -> RedirectResponse | None:
 
 def redirect_with_message(path: str, message: str, level: str = "success") -> RedirectResponse:
     query = urlencode({"msg": message, "level": level})
-    return RedirectResponse(url=f"{path}?{query}", status_code=status.HTTP_303_SEE_OTHER)
+    separator = "&" if "?" in path else "?"
+    return RedirectResponse(url=f"{path}{separator}{query}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def csrf_failure_path(request: Request) -> str:
+    referer = (request.headers.get("referer") or "").strip()
+    if referer:
+        parsed = urlparse(referer)
+        if not parsed.netloc or parsed.netloc == request.url.netloc:
+            path = parsed.path or "/dashboard"
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+            return path
+    if request.url.path.startswith("/settings"):
+        return "/settings"
+    if request.url.path.startswith("/links"):
+        return "/links"
+    if request.url.path.startswith("/activity"):
+        return "/activity"
+    if request.url.path == "/logout":
+        return "/login"
+    return "/dashboard"
+
+
+def validate_login_csrf(request: Request, submitted_token: str) -> RedirectResponse | None:
+    expected_token = (request.cookies.get(LOGIN_CSRF_COOKIE_NAME) or "").strip()
+    submitted_token = submitted_token.strip()
+    if submitted_token and expected_token and secrets.compare_digest(submitted_token, expected_token):
+        return None
+    logger.warning("CSRF_FAIL path=%s ip=%s mode=login", request.url.path, get_client_ip(request))
+    return redirect_with_message("/login", "登录页面已失效，请刷新后重试", "error")
+
+
+def validate_session_csrf(request: Request, submitted_token: str) -> RedirectResponse | None:
+    session_token = get_session_token(request)
+    expected_token = get_session_csrf_token(session_token) if session_token else None
+    submitted_token = submitted_token.strip()
+    if submitted_token and expected_token and secrets.compare_digest(submitted_token, expected_token):
+        return None
+    logger.warning("CSRF_FAIL path=%s ip=%s mode=session", request.url.path, get_client_ip(request))
+    return redirect_with_message(csrf_failure_path(request), "页面已过期，请刷新后重试", "error")
 
 
 def service_restart_supported(name: str) -> bool:
@@ -1685,7 +1869,7 @@ def get_allocated_quota_bytes(owner_user_id: int, exclude_link_id: int | None = 
     return int(row['total'] or 0)
 
 
-def build_common_context(request: Request, user: sqlite3.Row, active_nav: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_common_context(request: Request, user: dict[str, Any], active_nav: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = get_current_settings()
     owner = is_owner(user)
     links = build_links_view(settings, only_owner_user_id=(None if owner else user["id"]))
@@ -1714,6 +1898,7 @@ def build_common_context(request: Request, user: sqlite3.Row, active_nav: str, e
         "active_nav": active_nav,
         "message": request.query_params.get("msg", ""),
         "level": request.query_params.get("level", "info"),
+        "csrf_token": user["csrf_token"],
         "runtime": runtime_state.copy(),
         "audit": get_recent_audit(),
         "system_info": get_system_info(),
@@ -1758,6 +1943,7 @@ def startup_event() -> None:
     ensure_default_settings_from_xray()
     ensure_admin_user()
     bootstrap_links_from_xray()
+    harden_data_permissions()
     if poller_thread is None or not poller_thread.is_alive():
         stop_event.clear()
         poller_thread = threading.Thread(target=poll_loop, daemon=True)
@@ -1786,37 +1972,59 @@ def login_page(request: Request) -> HTMLResponse:
     if optional_current_user(request):
         return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
     settings = get_current_settings()
-    return templates.TemplateResponse(
+    csrf_token = get_login_csrf_token(request)
+    response = templates.TemplateResponse(
         "login.html",
         {
             "request": request,
             "panel_title": get_setting("panel_title", DEFAULT_PANEL_TITLE),
             "announcement": get_setting("announcement", ""),
             "server_domain": settings["server_domain"],
+            "csrf_token": csrf_token,
             "message": request.query_params.get("msg", ""),
             "level": request.query_params.get("level", "info"),
         },
     )
+    set_login_csrf_cookie(response, csrf_token)
+    return response
 
 
 @app.post("/login")
-def login_submit(request: Request, username: str = Form(...), password: str = Form(...)) -> RedirectResponse:
+def login_submit(
+    request: Request,
+    csrf_token: str = Form(...),
+    username: str = Form(...),
+    password: str = Form(...),
+) -> RedirectResponse:
+    csrf_error = validate_login_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     normalized_username = username.strip()
+    client_ip = get_client_ip(request)
+    if get_login_lockout_remaining(client_ip) > 0:
+        logger.warning("AUTH_RATE_LIMIT username=%s ip=%s", normalized_username or "-", client_ip)
+        return redirect_with_message("/login", "登录尝试过于频繁，请稍后再试", "error")
     with closing(db()) as conn:
         row = conn.execute("SELECT * FROM admin_users WHERE username = ?", (normalized_username,)).fetchone()
         if not row or not verify_password(password, row["salt"], row["password_hash"]):
-            logger.warning("AUTH_FAIL username=%s ip=%s", normalized_username or "-", get_client_ip(request))
+            register_login_failure(client_ip)
+            logger.warning("AUTH_FAIL username=%s ip=%s", normalized_username or "-", client_ip)
             return redirect_with_message("/login", "用户名或密码不正确", "error")
         conn.execute("UPDATE admin_users SET last_login_at = ? WHERE id = ?", (now_iso(), row["id"]))
         conn.commit()
+    clear_login_failures(client_ip)
     token = create_session(row["id"])
     response = RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
     set_session_cookie(response, token)
+    response.delete_cookie(LOGIN_CSRF_COOKIE_NAME, path="/login")
     return response
 
 
 @app.post("/logout")
-def logout(request: Request) -> RedirectResponse:
+def logout(request: Request, csrf_token: str = Form(...)) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     token = get_session_token(request)
     if token:
         with closing(db()) as conn:
@@ -1904,6 +2112,8 @@ def api_state(user: sqlite3.Row = Depends(get_current_user)) -> JSONResponse:
 
 @app.post("/settings/general")
 def update_general_settings(
+    request: Request,
+    csrf_token: str = Form(...),
     panel_title: str = Form(...),
     announcement: str = Form(""),
     server_domain: str = Form(...),
@@ -1913,6 +2123,9 @@ def update_general_settings(
     target: str = Form(...),
     user: sqlite3.Row = Depends(get_current_user),
 ) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     denied = ensure_owner_or_redirect(user)
     if denied:
         return denied
@@ -1937,7 +2150,10 @@ def update_general_settings(
 
 
 @app.post("/settings/rotate-shortid")
-def rotate_shortid(user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+def rotate_shortid(request: Request, csrf_token: str = Form(...), user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     denied = ensure_owner_or_redirect(user)
     if denied:
         return denied
@@ -1951,7 +2167,10 @@ def rotate_shortid(user: sqlite3.Row = Depends(get_current_user)) -> RedirectRes
 
 
 @app.post("/settings/rotate-keys")
-def rotate_reality_keys(user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+def rotate_reality_keys(request: Request, csrf_token: str = Form(...), user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     denied = ensure_owner_or_redirect(user)
     if denied:
         return denied
@@ -1969,10 +2188,14 @@ def rotate_reality_keys(user: sqlite3.Row = Depends(get_current_user)) -> Redire
 @app.post("/settings/password")
 def change_password(
     request: Request,
+    csrf_token: str = Form(...),
     current_password: str = Form(...),
     new_password: str = Form(...),
     user: sqlite3.Row = Depends(get_current_user),
 ) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     if len(new_password) < 8:
         return redirect_with_message("/settings", "新密码至少 8 位", "error")
     if not verify_password(current_password, user["salt"], user["password_hash"]):
@@ -1995,10 +2218,15 @@ def change_password(
 
 @app.post("/settings/username")
 def change_username(
+    request: Request,
+    csrf_token: str = Form(...),
     new_username: str = Form(...),
     current_password: str = Form(...),
     user: sqlite3.Row = Depends(get_current_user),
 ) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     new_username = new_username.strip()
     if len(new_username) < 3:
         return redirect_with_message("/settings", "用户名至少 3 位", "error")
@@ -2018,6 +2246,8 @@ def change_username(
 
 @app.post("/settings/users/create")
 def create_member_user(
+    request: Request,
+    csrf_token: str = Form(...),
     username: str = Form(...),
     password: str = Form(...),
     link_name: str = Form(""),
@@ -2027,6 +2257,9 @@ def create_member_user(
     expires_at: str = Form(""),
     user: sqlite3.Row = Depends(get_current_user),
 ) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     denied = ensure_owner_or_redirect(user)
     if denied:
         return denied
@@ -2056,7 +2289,10 @@ def create_member_user(
 
 
 @app.post("/settings/users/{user_id}/delete")
-def delete_admin_user(user_id: int, user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+def delete_admin_user(request: Request, user_id: int, csrf_token: str = Form(...), user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     denied = ensure_owner_or_redirect(user)
     if denied:
         return denied
@@ -2085,12 +2321,17 @@ def delete_admin_user(user_id: int, user: sqlite3.Row = Depends(get_current_user
 
 @app.post("/settings/storage")
 def update_storage_settings(
+    request: Request,
+    csrf_token: str = Form(...),
     max_traffic_rows: str = Form(...),
     max_access_rows: str = Form(...),
     max_access_log_mb: str = Form(...),
     max_error_log_mb: str = Form(...),
     user: sqlite3.Row = Depends(get_current_user),
 ) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     denied = ensure_owner_or_redirect(user)
     if denied:
         return denied
@@ -2114,7 +2355,16 @@ def update_storage_settings(
 
 
 @app.post("/settings/service/{service_name}/{action}")
-def service_action(service_name: str, action: str, user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+def service_action(
+    request: Request,
+    service_name: str,
+    action: str,
+    csrf_token: str = Form(...),
+    user: sqlite3.Row = Depends(get_current_user),
+) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     denied = ensure_owner_or_redirect(user)
     if denied:
         return denied
@@ -2129,6 +2379,8 @@ def service_action(service_name: str, action: str, user: sqlite3.Row = Depends(g
 
 @app.post("/links/create")
 def create_link(
+    request: Request,
+    csrf_token: str = Form(...),
     name: str = Form(...),
     email: str = Form(...),
     quota_gb: str = Form(""),
@@ -2139,6 +2391,9 @@ def create_link(
     notes: str = Form(""),
     user: sqlite3.Row = Depends(get_current_user),
 ) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     try:
         quota_bytes = parse_quota_gb(quota_gb) if quota_gb.strip() else 0
         reset_day_value = max(1, min(28, int(reset_day or 1)))
@@ -2192,7 +2447,9 @@ def create_link(
 
 @app.post("/links/{link_id}/update")
 def update_link(
+    request: Request,
     link_id: int,
+    csrf_token: str = Form(...),
     name: str = Form(...),
     email: str = Form(...),
     quota_gb: str = Form(""),
@@ -2203,6 +2460,9 @@ def update_link(
     notes: str = Form(""),
     user: sqlite3.Row = Depends(get_current_user),
 ) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     link = get_link(link_id)
     denied = ensure_link_access(user, link)
     if denied:
@@ -2255,7 +2515,10 @@ def update_link(
 
 
 @app.post("/links/{link_id}/toggle")
-def toggle_link(link_id: int, user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+def toggle_link(request: Request, link_id: int, csrf_token: str = Form(...), user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     link = get_link(link_id)
     denied = ensure_link_access(user, link)
     if denied:
@@ -2276,7 +2539,10 @@ def toggle_link(link_id: int, user: sqlite3.Row = Depends(get_current_user)) -> 
 
 
 @app.post("/links/{link_id}/rotate")
-def rotate_link_uuid(link_id: int, user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+def rotate_link_uuid(request: Request, link_id: int, csrf_token: str = Form(...), user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     link = get_link(link_id)
     denied = ensure_link_access(user, link)
     if denied:
@@ -2293,7 +2559,10 @@ def rotate_link_uuid(link_id: int, user: sqlite3.Row = Depends(get_current_user)
 
 
 @app.post("/links/{link_id}/reset-usage")
-def reset_link_usage(link_id: int, user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+def reset_link_usage(request: Request, link_id: int, csrf_token: str = Form(...), user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     link = get_link(link_id)
     denied = ensure_link_access(user, link)
     if denied:
@@ -2316,7 +2585,10 @@ def reset_link_usage(link_id: int, user: sqlite3.Row = Depends(get_current_user)
 
 
 @app.post("/links/{link_id}/share-token")
-def rotate_share_token(link_id: int, user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+def rotate_share_token(request: Request, link_id: int, csrf_token: str = Form(...), user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     link = get_link(link_id)
     denied = ensure_link_access(user, link)
     if denied:
@@ -2329,7 +2601,10 @@ def rotate_share_token(link_id: int, user: sqlite3.Row = Depends(get_current_use
 
 
 @app.post("/links/{link_id}/delete")
-def delete_link(link_id: int, user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+def delete_link(request: Request, link_id: int, csrf_token: str = Form(...), user: sqlite3.Row = Depends(get_current_user)) -> RedirectResponse:
+    csrf_error = validate_session_csrf(request, csrf_token)
+    if csrf_error:
+        return csrf_error
     link = get_link(link_id)
     denied = ensure_link_access(user, link)
     if denied:

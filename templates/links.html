@@ -22,9 +22,9 @@
             <p>{{ link.email }}</p>
           </div>
           <div class="toolbar wrap-head">
-            <form method="post" action="/links/{{ link.id }}/toggle"><button class="btn btn-light" type="submit">{% if link.enabled %}停用{% else %}启用{% endif %}</button></form>
-            <form method="post" action="/links/{{ link.id }}/reset-usage"><button class="btn btn-light" type="submit">重置流量</button></form>
-            <form method="post" action="/links/{{ link.id }}/delete" onsubmit="return confirm('确认删除这个链接吗？');"><button class="btn btn-danger" type="submit">删除</button></form>
+            <form method="post" action="/links/{{ link.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-light" type="submit">{% if link.enabled %}停用{% else %}启用{% endif %}</button></form>
+            <form method="post" action="/links/{{ link.id }}/reset-usage"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-light" type="submit">重置流量</button></form>
+            <form method="post" action="/links/{{ link.id }}/delete" onsubmit="return confirm('确认删除这个链接吗？');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-danger" type="submit">删除</button></form>
           </div>
         </div>
         <div class="link-stats-grid compact-link-grid">
@@ -38,6 +38,7 @@
           <summary>高级设置与订阅</summary>
           <div class="link-details-body">
             <form class="form-stack mt-20" method="post" action="/links/{{ link.id }}/update">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <div class="form-grid cols-4">
                 <label><span>名称</span><input type="text" name="name" value="{{ link.name }}" required></label>
                 <label><span>邮箱标识</span><input type="email" name="email" value="{{ link.email }}" required></label>
@@ -96,8 +97,8 @@
         <p>{{ link.email }}</p>
       </div>
       <div class="toolbar wrap-head">
-        <form method="post" action="/links/{{ link.id }}/toggle"><button class="btn btn-light" type="submit">{% if link.enabled %}停用{% else %}启用{% endif %}</button></form>
-        <form method="post" action="/links/{{ link.id }}/delete" onsubmit="return confirm('确认删除这个链接吗？');"><button class="btn btn-danger" type="submit">删除</button></form>
+        <form method="post" action="/links/{{ link.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-light" type="submit">{% if link.enabled %}停用{% else %}启用{% endif %}</button></form>
+        <form method="post" action="/links/{{ link.id }}/delete" onsubmit="return confirm('确认删除这个链接吗？');"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="btn btn-danger" type="submit">删除</button></form>
       </div>
     </div>
     <div class="link-stats-grid compact-link-grid">
@@ -111,6 +112,7 @@
       <summary>高级设置与订阅</summary>
       <div class="link-details-body">
         <form class="form-stack mt-20" method="post" action="/links/{{ link.id }}/update">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="form-grid cols-4">
             <label><span>名称</span><input type="text" name="name" value="{{ link.name }}" required></label>
             <label><span>邮箱标识</span><input type="email" name="email" value="{{ link.email }}" required></label>
@@ -146,6 +148,7 @@
     </div>
   </div>
   <form class="form-stack" method="post" action="/links/create">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-grid cols-4">
       <label><span>名称</span><input type="text" name="name" placeholder="例如：iPhone 主用" required></label>
       <label><span>邮箱标识</span><input type="email" name="email" placeholder="admin@example.com" required></label>

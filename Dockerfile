@@ -2,6 +2,8 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PANEL_BIND_HOST=127.0.0.1
+ENV PANEL_PORT=9200
 
 WORKDIR /app
 
@@ -26,4 +28,4 @@ RUN mkdir -p /var/lib/vui-plan
 
 EXPOSE 9200
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9200"]
+CMD ["sh", "-c", "uvicorn app:app --host \"$PANEL_BIND_HOST\" --port \"$PANEL_PORT\""]

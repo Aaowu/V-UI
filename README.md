@@ -64,6 +64,7 @@
 - 安装本面板
 - 默认以 Docker 方式运行面板
 - 写入 `nginx` 反代配置
+- 配置 `fail2ban` 保护登录限速封禁
 - 打开 Reality 端口并尝试持久化防火墙规则
 
 默认部署形态是：
@@ -114,7 +115,7 @@ bash scripts/install.sh
 
 安装完成后会输出：
 - 面板登录地址
-- 初始主账号文件位置
+- 初始管理员账号和一次性密码
 - 默认 `VLESS Reality Vision` 链接
 - 面板 Docker 启停命令
 
@@ -124,6 +125,7 @@ bash scripts/install.sh
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+PANEL_BOOTSTRAP_OWNER_PASSWORD='change-this-password-now' \
 uvicorn app:app --host 127.0.0.1 --port 9200 --reload
 ```
 
@@ -142,19 +144,21 @@ uvicorn app:app --host 127.0.0.1 --port 9200 --reload
 
 默认 `docker-compose.yml` 采用 `network_mode: host`，这样它可以继续访问宿主机上的 `127.0.0.1:10085` Xray API，也能继续配合现有的宿主机 `nginx -> 127.0.0.1:9200` 反代。
 
-### 迁移步骤
+安全默认值：
 
-先停止原来的 `systemd` 面板服务，避免和容器同时占用 `9200`：
+- 面板默认只监听 `127.0.0.1:9200`
+- 通过宿主机 `nginx` 暴露 HTTPS 入口
+- 应用内建登录失败限速
+- 对后台敏感 `POST` 操作启用 CSRF 防护
+- 默认安装 `fail2ban`，并基于 `nginx limit_req` 封禁爆破来源
+- 不再长期保存明文管理员凭据文件
+
+### 启动方式
+
+在项目目录执行：
 
 ```bash
-systemctl stop vui-plan
-systemctl disable vui-plan
-```
-
-然后在项目目录执行：
-
-```bash
-bash scripts/migrate-to-docker.sh
+bash scripts/panel-docker.sh up
 ```
 
 查看状态：
@@ -186,8 +190,8 @@ PANEL_SESSION_COOKIE_SECURE=0
 - 模板：`templates/`
 - 静态资源：`static/`
 - 一键安装：`scripts/install.sh`
+- 首次初始化管理员：`scripts/bootstrap-owner.sh`
 - Docker 启停：`scripts/panel-docker.sh`
-- 旧实例迁移到 Docker：`scripts/migrate-to-docker.sh`
 - 发布前脱敏：`scripts/release-sanitize.sh`
 - 示例配置：`.env.example`
 
