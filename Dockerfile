@@ -8,7 +8,7 @@ ENV PANEL_PORT=9200
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates iptables util-linux \
+    && apt-get install -y --no-install-recommends bash ca-certificates iptables \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./

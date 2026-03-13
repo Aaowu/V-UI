@@ -2694,8 +2694,8 @@ def delete_link(request: Request, link_id: int, csrf_token: str = Form(...), use
     return redirect_with_message("/links", message, level)
 
 
-@app.get("/subscribe/{token}")
-@app.get("/subscribe/{token}/loon.txt")
+@app.api_route("/subscribe/{token}", methods=["GET", "HEAD"])
+@app.api_route("/subscribe/{token}/loon.txt", methods=["GET", "HEAD"])
 def subscribe_loon(token: str) -> PlainTextResponse:
     settings = get_current_settings()
     with closing(db()) as conn:
@@ -2712,8 +2712,8 @@ def subscribe_loon(token: str) -> PlainTextResponse:
     return PlainTextResponse(line + "\n", headers=headers)
 
 
-@app.get("/subscribe/{token}/vless")
-@app.get("/subscribe/{token}/vless.txt")
+@app.api_route("/subscribe/{token}/vless", methods=["GET", "HEAD"])
+@app.api_route("/subscribe/{token}/vless.txt", methods=["GET", "HEAD"])
 def subscribe_vless(token: str) -> PlainTextResponse:
     settings = get_current_settings()
     with closing(db()) as conn:

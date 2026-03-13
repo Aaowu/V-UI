@@ -4,6 +4,11 @@ services:
       context: ${PANEL_BUILD_CONTEXT:-.}
     container_name: ${PANEL_CONTAINER_NAME:-vui-plan}
     restart: ${PANEL_RESTART_POLICY:-unless-stopped}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     init: true
     network_mode: host
     read_only: true
